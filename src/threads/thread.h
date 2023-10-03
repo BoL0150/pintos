@@ -102,6 +102,15 @@ struct thread
     unsigned magic;                     /**< Detects stack overflow. */
   };
 
+typedef struct{
+  int64_t remain_time;
+  struct thread * t;
+  struct list_elem elem;
+}sleep_thread;
+
+void 
+add_sleep_thread (struct thread *t, int64_t sleep_time);
+void update_sleep_list (void);
 /** If false (default), use round-robin scheduler.
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */

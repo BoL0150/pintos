@@ -11,6 +11,7 @@
 #include "threads/switch.h"
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "malloc.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -36,6 +37,8 @@ static struct thread *initial_thread;
 
 /** Lock used by allocate_tid(). */
 static struct lock tid_lock;
+
+static struct list sleep_thread_list;
 
 /** Stack frame for kernel_thread(). */
 struct kernel_thread_frame 
@@ -71,6 +74,37 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+/**
+ * 此函数要访问公共的数据结构sleep_thread，调用时要关中断
+*/
+void 
+add_sleep_thread(struct thread *t, int64_t sleep_time){
+  sleep_thread *sleep_t = (sleep_thread*)malloc(sizeof(sleep_thread));
+  sleep_t->remain_time = sleep_time;
+  sleep_t->t = t;
+  list_push_back(&sleep_thread_list,&sleep_t->elem);
+}
+/**
+ * 此函数要访问公共的数据结构sleep_thread，调用时要关中断，更新睡眠thread的ticks的过程必须要是原子的
+*/
+void 
+update_sleep_list (void){
+  enum intr_level old_level = intr_disable();
+  // ASSERT(list_size(&sleep_thread_list) > 0);
+  struct list_elem *pos;
+  for (pos = list_begin(&sleep_thread_list); pos != list_end(&sleep_thread_list);){
+    sleep_thread *sleep_entry = list_entry (pos, sleep_thread, elem);
+    sleep_entry->remain_time--;
+    if (sleep_entry->remain_time <= 0) {
+      pos = list_remove (pos);
+      thread_unblock(sleep_entry->t);
+      // free(sleep_entry);
+      continue;
+    }
+    pos = list_next(pos);
+  }
+  intr_set_level(old_level);
+}
 /** Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
    general and it is possible in this case only because loader.S
@@ -92,7 +126,7 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
-
+  list_init (&sleep_thread_list);
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
   init_thread (initial_thread, "main", PRI_DEFAULT);
