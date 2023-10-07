@@ -31,7 +31,26 @@
 #include <string.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
-
+struct semaphore *
+find_and_rm_max_pri_sema (struct list * l) {
+  ASSERT (l != NULL);
+  ASSERT (intr_get_level() == INTR_OFF);
+  struct list_elem * e;
+  int64_t max_pri = -1;
+  struct semaphore_elem * max_pri_sema_elem;
+  for (e = list_begin(l); e != list_end(l); e = list_next(e)) {
+    struct semaphore_elem *sema = list_entry (e, struct semaphore_elem, elem);
+    struct list threads = sema->semaphore.waiters;
+    ASSERT (list_size (&threads) == 1);
+    struct thread * cur_thread = list_entry (list_begin(&threads), struct thread, elem);
+    if (cur_thread->priority > max_pri) {
+      max_pri = cur_thread->priority;
+      max_pri_sema_elem = sema;
+    }
+  }
+  list_remove (&max_pri_sema_elem->elem);
+  return &max_pri_sema_elem->semaphore;
+}
 /** Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
    manipulating it:
@@ -113,9 +132,11 @@ sema_up (struct semaphore *sema)
   ASSERT (sema != NULL);
 
   old_level = intr_disable ();
-  if (!list_empty (&sema->waiters)) 
-    thread_unblock (list_entry (list_pop_front (&sema->waiters),
-                                struct thread, elem));
+  if (!list_empty (&sema->waiters)) {
+    struct thread * max_pri_thread = find_max_pri_thread(&sema->waiters);
+    list_remove (&max_pri_thread->elem);
+    thread_unblock (max_pri_thread);
+  }
   sema->value++;
   intr_set_level (old_level);
 }
@@ -246,12 +267,6 @@ lock_held_by_current_thread (const struct lock *lock)
   return lock->holder == thread_current ();
 }
 
-/** One semaphore in a list. */
-struct semaphore_elem 
-  {
-    struct list_elem elem;              /**< List element. */
-    struct semaphore semaphore;         /**< This semaphore. */
-  };
 
 /** Initializes condition variable COND.  A condition variable
    allows one piece of code to signal a condition and cooperating
@@ -284,6 +299,7 @@ cond_init (struct condition *cond)
    interrupt handler.  This function may be called with
    interrupts disabled, but interrupts will be turned back on if
    we need to sleep. */
+  // 在pintos的条件变量中，为每个线程维护一个信号量，线程的睡眠和唤醒都是通过信号量来进行的
 void
 cond_wait (struct condition *cond, struct lock *lock) 
 {
@@ -316,9 +332,9 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
   ASSERT (!intr_context ());
   ASSERT (lock_held_by_current_thread (lock));
 
-  if (!list_empty (&cond->waiters)) 
-    sema_up (&list_entry (list_pop_front (&cond->waiters),
-                          struct semaphore_elem, elem)->semaphore);
+  if (!list_empty (&cond->waiters)) {
+    sema_up (find_and_rm_max_pri_sema (&cond->waiters));
+  }
 }
 
 /** Wakes up all threads, if any, waiting on COND (protected by

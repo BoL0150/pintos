@@ -11,6 +11,14 @@ struct semaphore
     struct list waiters;        /**< List of waiting threads. */
   };
 
+/** One semaphore in a list. */
+// 在pintos的条件变量中，为每个线程维护一个信号量，线程的睡眠和唤醒都是通过信号量来进行的
+struct semaphore_elem 
+  {
+    struct list_elem elem;              /**< List element. */
+    struct semaphore semaphore;         /**< This semaphore. */
+  };
+struct semaphore * find_and_rm_max_pri_sema (struct list * l);
 void sema_init (struct semaphore *, unsigned value);
 void sema_down (struct semaphore *);
 bool sema_try_down (struct semaphore *);
@@ -30,7 +38,10 @@ bool lock_try_acquire (struct lock *);
 void lock_release (struct lock *);
 bool lock_held_by_current_thread (const struct lock *);
 
-/** Condition variable. */
+/** Condition variable. 
+ * 此条件变量的list中连接的不是waiting的线程，而是先给每个线程创建一个sema，把sema连接到条件变量的
+ * waiters list上。然后唤醒时是从list中选取sema，然后唤醒这个sema对应的线程
+*/
 struct condition 
   {
     struct list waiters;        /**< List of waiting threads. */

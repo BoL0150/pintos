@@ -74,11 +74,48 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+struct thread *
+find_max_pri_thread (struct list * l) {
+  ASSERT (intr_get_level() == INTR_OFF);
+  ASSERT (l != NULL);
+  ASSERT (!list_empty(l));
+
+  int64_t max_pri = -1;
+  struct thread * max_pri_thread;
+  for (struct list_elem *e = list_begin (l); e != list_end (l); e = list_next(e)){
+    struct thread * t = list_entry (e, struct thread, elem);
+    if (t->priority > max_pri) {
+      max_pri = t->priority;
+      max_pri_thread = t;
+    }
+  }
+  return max_pri_thread;
+}
+
+// 此函数调用时必须关中断，如果加入的线程的优先级比当前线程高，就返回true，表示当前线程要让出CPU
+bool
+add_to_ready_list (struct thread *t) {
+  ASSERT (intr_get_level() == INTR_OFF);
+  ASSERT (is_thread(t));
+  // 加入到ready_list后才变成的ready状态
+  ASSERT (t->status != THREAD_READY);
+
+  struct thread * cur = thread_current();
+  list_push_back (&ready_list,&t->elem);
+  // 如果加入到ready_list中的线程比当前线程的优先级高，那么当前线程马上让出CPU
+  // 那么此时调用thread_yield加入到ready_list的线程就是当前线程，与自己的priority相同
+  if (t->priority > cur->priority) {
+    return true;
+  }
+  return false;
+}
 /**
  * 此函数要访问公共的数据结构sleep_thread，调用时要关中断
 */
 void 
 add_sleep_thread(struct thread *t, int64_t sleep_time){
+  ASSERT(intr_get_level() == INTR_OFF);
+  ASSERT (is_thread(t));
   sleep_thread *sleep_t = (sleep_thread*)malloc(sizeof(sleep_thread));
   sleep_t->remain_time = sleep_time;
   sleep_t->t = t;
@@ -89,7 +126,7 @@ add_sleep_thread(struct thread *t, int64_t sleep_time){
 */
 void 
 update_sleep_list (void){
-  enum intr_level old_level = intr_disable();
+  ASSERT(intr_get_level() == INTR_OFF);
   // ASSERT(list_size(&sleep_thread_list) > 0);
   struct list_elem *pos;
   for (pos = list_begin(&sleep_thread_list); pos != list_end(&sleep_thread_list);){
@@ -103,7 +140,6 @@ update_sleep_list (void){
     }
     pos = list_next(pos);
   }
-  intr_set_level(old_level);
 }
 /** Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -271,9 +307,16 @@ thread_unblock (struct thread *t)
 
   old_level = intr_disable ();
   ASSERT (t->status == THREAD_BLOCKED);
-  list_push_back (&ready_list, &t->elem);
+  bool yield = add_to_ready_list (t);
   t->status = THREAD_READY;
   intr_set_level (old_level);
+
+  if (yield) {
+    if (intr_context ()) {
+      intr_yield_on_return ();
+    }
+    else thread_yield ();
+  }
 }
 
 /** Returns the name of the running thread. */
@@ -341,8 +384,9 @@ thread_yield (void)
   ASSERT (!intr_context ());
 
   old_level = intr_disable ();
+  // 这里是自己把自己加入到list中，所以不需要管优先级
   if (cur != idle_thread) 
-    list_push_back (&ready_list, &cur->elem);
+    add_to_ready_list (cur);
   cur->status = THREAD_READY;
   schedule ();
   intr_set_level (old_level);
@@ -369,7 +413,13 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
+  int64_t old_pri = thread_current ()->priority;
   thread_current ()->priority = new_priority;
+  if (new_priority >= old_pri) return;
+  struct thread * max_pri_thread = find_max_pri_thread (&ready_list);
+  if (max_pri_thread->priority < new_priority) return;
+  if (intr_context ()) intr_yield_on_return ();
+  else thread_yield ();
 }
 
 /** Returns the current thread's priority. */
@@ -524,10 +574,13 @@ alloc_frame (struct thread *t, size_t size)
 static struct thread *
 next_thread_to_run (void) 
 {
+  ASSERT(intr_get_level() == INTR_OFF);
   if (list_empty (&ready_list))
     return idle_thread;
-  else
-    return list_entry (list_pop_front (&ready_list), struct thread, elem);
+    // return list_entry (list_pop_front (&ready_list), struct thread, elem);
+  struct thread * next_thread = find_max_pri_thread(&ready_list);
+  list_remove (&next_thread->elem);
+  return next_thread;
 }
 
 /** Completes a thread switch by activating the new thread's page

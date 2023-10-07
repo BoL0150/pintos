@@ -108,6 +108,10 @@ typedef struct{
   struct list_elem elem;
 }sleep_thread;
 
+struct thread *
+find_max_pri_thread (struct list * l);
+bool
+add_to_ready_list (struct thread *t);
 void 
 add_sleep_thread (struct thread *t, int64_t sleep_time);
 void update_sleep_list (void);
