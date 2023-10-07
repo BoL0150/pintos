@@ -128,17 +128,23 @@ void
 sema_up (struct semaphore *sema) 
 {
   enum intr_level old_level;
-
+  bool yield = false;
   ASSERT (sema != NULL);
 
   old_level = intr_disable ();
+  
   if (!list_empty (&sema->waiters)) {
     struct thread * max_pri_thread = find_max_pri_thread(&sema->waiters);
     list_remove (&max_pri_thread->elem);
-    thread_unblock (max_pri_thread);
+    yield = thread_unblock (max_pri_thread);
   }
   sema->value++;
   intr_set_level (old_level);
+  // 原子性结束，可以切换线程
+  if (yield) {
+    if (intr_context ()) intr_yield_on_return ();
+    else thread_yield ();
+  }
 }
 
 static void sema_test_helper (void *sema_);

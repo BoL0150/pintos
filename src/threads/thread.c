@@ -127,6 +127,7 @@ add_sleep_thread(struct thread *t, int64_t sleep_time){
 void 
 update_sleep_list (void){
   ASSERT(intr_get_level() == INTR_OFF);
+  ASSERT (intr_context ());
   // ASSERT(list_size(&sleep_thread_list) > 0);
   struct list_elem *pos;
   for (pos = list_begin(&sleep_thread_list); pos != list_end(&sleep_thread_list);){
@@ -134,7 +135,8 @@ update_sleep_list (void){
     sleep_entry->remain_time--;
     if (sleep_entry->remain_time <= 0) {
       pos = list_remove (pos);
-      thread_unblock(sleep_entry->t);
+      bool yield = thread_unblock(sleep_entry->t);
+      if (yield) intr_yield_on_return ();
       // free(sleep_entry);
       continue;
     }
@@ -269,7 +271,11 @@ thread_create (const char *name, int priority,
   sf->ebp = 0;
 
   /* Add to run queue. */
-  thread_unblock (t);
+  bool yield = thread_unblock (t);
+  if (yield) {
+    if (intr_context ()) intr_yield_on_return ();
+    else thread_yield ();
+  } 
 
   return tid;
 }
@@ -298,7 +304,7 @@ thread_block (void)
    be important: if the caller had disabled interrupts itself,
    it may expect that it can atomically unblock a thread and
    update other data. */
-void
+bool
 thread_unblock (struct thread *t) 
 {
   enum intr_level old_level;
@@ -310,13 +316,15 @@ thread_unblock (struct thread *t)
   bool yield = add_to_ready_list (t);
   t->status = THREAD_READY;
   intr_set_level (old_level);
-
-  if (yield) {
-    if (intr_context ()) {
-      intr_yield_on_return ();
-    }
-    else thread_yield ();
-  }
+  return yield;
+  // 不应该在unblock中切换线程，因为有些场景下唤醒线程和某些操作是原子操作（如果调用unblock时关了中断，
+  // 就说明用户期望unblock和某些操作是原子操作）,所以应该将切换线程移到unblock外面，等待原子操作结束后在切换线程
+  // if (yield) {
+  //   if (intr_context ()) {
+  //     intr_yield_on_return ();
+  //   }
+  //   else thread_yield ();
+  // }
 }
 
 /** Returns the name of the running thread. */
