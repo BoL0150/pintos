@@ -424,7 +424,17 @@ thread_set_priority (int new_priority)
   int64_t old_pri = thread_current ()->priority;
   thread_current ()->priority = new_priority;
   if (new_priority >= old_pri) return;
+
+  enum intr_level old_level = intr_disable ();
+
+  if (list_empty(&ready_list)) {
+    intr_set_level (old_level);
+    return;
+  }
+
   struct thread * max_pri_thread = find_max_pri_thread (&ready_list);
+  intr_set_level (old_level);
+
   if (max_pri_thread->priority < new_priority) return;
   if (intr_context ()) intr_yield_on_return ();
   else thread_yield ();

@@ -32,17 +32,17 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 struct semaphore *
-find_and_rm_max_pri_sema (struct list * l) {
-  ASSERT (l != NULL);
+find_and_rm_max_pri_sema (struct list * cond_waiters) {
+  ASSERT (cond_waiters != NULL);
   ASSERT (intr_get_level() == INTR_OFF);
   struct list_elem * e;
   int64_t max_pri = -1;
   struct semaphore_elem * max_pri_sema_elem;
-  for (e = list_begin(l); e != list_end(l); e = list_next(e)) {
+  for (e = list_begin(cond_waiters); e != list_end(cond_waiters); e = list_next(e)) {
     struct semaphore_elem *sema = list_entry (e, struct semaphore_elem, elem);
-    struct list threads = sema->semaphore.waiters;
-    ASSERT (list_size (&threads) == 1);
-    struct thread * cur_thread = list_entry (list_begin(&threads), struct thread, elem);
+    struct list * threads = &sema->semaphore.waiters;
+    ASSERT (list_size (threads) == 1);
+    struct thread * cur_thread = list_entry (list_begin(threads), struct thread, elem);
     if (cur_thread->priority > max_pri) {
       max_pri = cur_thread->priority;
       max_pri_sema_elem = sema;
@@ -318,6 +318,10 @@ cond_wait (struct condition *cond, struct lock *lock)
   
   sema_init (&waiter.semaphore, 0);
   list_push_back (&cond->waiters, &waiter.elem);
+
+  list_size (&cond->waiters);
+  list_size (&list_entry (list_begin (&cond->waiters), struct semaphore_elem, elem)->semaphore.waiters);
+
   lock_release (lock);
   sema_down (&waiter.semaphore);
   lock_acquire (lock);
@@ -339,7 +343,9 @@ cond_signal (struct condition *cond, struct lock *lock UNUSED)
   ASSERT (lock_held_by_current_thread (lock));
 
   if (!list_empty (&cond->waiters)) {
+    enum intr_level old_level = intr_disable ();
     sema_up (find_and_rm_max_pri_sema (&cond->waiters));
+    intr_set_level (old_level);
   }
 }
 
