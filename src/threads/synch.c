@@ -27,6 +27,7 @@
 */
 
 #include "threads/synch.h"
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include "threads/interrupt.h"
@@ -50,6 +51,88 @@ find_and_rm_max_pri_sema (struct list * cond_waiters) {
   }
   list_remove (&max_pri_sema_elem->elem);
   return &max_pri_sema_elem->semaphore;
+}
+struct thread *
+find_max_pri_thread_among_locks (struct list * lock_list) {
+  ASSERT (lock_list != NULL);
+  if (list_empty(lock_list)) return NULL;
+  ASSERT (intr_get_level() == INTR_OFF);
+  struct list_elem * e;
+  int64_t max_pri = -1;
+  struct thread * max_pri_thread = NULL;
+  for (e = list_begin(lock_list); e != list_end(lock_list); e = list_next(e)) {
+    struct lock *lock = list_entry (e, struct lock, elem);
+    struct list * threads = &lock->semaphore.waiters;
+    if (list_empty(threads)) continue;
+    struct thread * temp = find_max_pri_thread (threads);
+    if (temp->priority > max_pri) {
+      max_pri = temp->priority;
+      max_pri_thread = temp;
+    }
+  }
+  return max_pri_thread;
+}
+
+void
+pri_inverse_sema_down (struct lock *lock) 
+{
+  enum intr_level old_level;
+
+  ASSERT (lock != NULL);
+  ASSERT (!intr_context ());
+  struct semaphore *sema = &lock->semaphore;
+  struct thread * lock_holder = lock->holder;
+  old_level = intr_disable ();
+
+  while (sema->value == 0) 
+    {
+      ASSERT (lock_holder != NULL);
+      list_push_back (&sema->waiters, &thread_current ()->elem);
+      ASSERT (!list_empty(&lock_holder->lock_list));
+      struct thread *max_pri_thread = find_max_pri_thread_among_locks(&lock_holder->lock_list);
+      ASSERT (max_pri_thread != NULL);
+      lock_holder->priority = max (lock_holder->true_pri, max_pri_thread->priority);
+      thread_block ();
+    }
+  list_push_back(&thread_current()->lock_list, &lock->elem);
+  sema->value--;
+  intr_set_level (old_level);
+}
+
+
+void
+pri_inverse_sema_up (struct lock *lock) 
+{
+  enum intr_level old_level;
+  bool yield = false;
+  ASSERT (lock != NULL);
+  struct semaphore * sema = &lock->semaphore;
+
+  old_level = intr_disable ();
+
+  struct thread * wakeup_thread = NULL;
+  if (!list_empty (&sema->waiters)) {
+    wakeup_thread = find_max_pri_thread(&sema->waiters);
+    list_remove (&wakeup_thread->elem);
+  }
+  sema->value++;
+  // 当前线程释放锁，就把锁从当前线程的lock_list中移除
+  list_remove (&lock->elem);
+  // 如果当前线程没有任何阻塞线程，则把优先级恢复成真实的优先级
+  struct thread * max_pri_thread = find_max_pri_thread_among_locks(&thread_current()->lock_list);
+  if (max_pri_thread == NULL)
+    thread_current()->priority = thread_current()->true_pri;
+  else 
+    thread_current()->priority = max_pri_thread->priority;
+  // wakeup一个线程后，将当前线程的优先级更新后，再将该线程唤醒，因为在unblock中有比较当前线程优先级和唤醒线程优先级的操作
+  if (wakeup_thread != NULL) yield = thread_unblock (wakeup_thread);
+
+  intr_set_level (old_level);
+  // 原子性结束，可以切换线程
+  if (yield) {
+    if (intr_context ()) intr_yield_on_return ();
+    else thread_yield ();
+  }
 }
 /** Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
@@ -222,8 +305,7 @@ lock_acquire (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
-
-  sema_down (&lock->semaphore);
+  pri_inverse_sema_down(lock);
   lock->holder = thread_current ();
 }
 
@@ -246,7 +328,16 @@ lock_try_acquire (struct lock *lock)
     lock->holder = thread_current ();
   return success;
 }
-
+// struct lock_elem *
+// find_lock_elem (struct lock *lock) {
+//   struct list_elem * e;
+//   struct list * lock_list = &thread_current()->lock_list;
+//   for (e = list_begin(lock_list); e != list_end(lock_list); e = list_next(e)) {
+//     struct lock_elem * lock_elem = list_entry(e, struct lock_elem, elem);
+//     if (lock_elem->lock == lock)return lock_elem;
+//   }
+//   return NULL;
+// }
 /** Releases LOCK, which must be owned by the current thread.
 
    An interrupt handler cannot acquire a lock, so it does not
@@ -259,7 +350,8 @@ lock_release (struct lock *lock)
   ASSERT (lock_held_by_current_thread (lock));
 
   lock->holder = NULL;
-  sema_up (&lock->semaphore);
+  pri_inverse_sema_up (lock);
+  // sema_up (&lock->semaphore);
 }
 
 /** Returns true if the current thread holds LOCK, false

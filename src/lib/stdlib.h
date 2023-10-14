@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 
+int max (int a, int b);
 /** Standard functions. */
 int atoi (const char *);
 void qsort (void *array, size_t cnt, size_t size,

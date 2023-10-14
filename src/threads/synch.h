@@ -18,19 +18,32 @@ struct semaphore_elem
     struct list_elem elem;              /**< List element. */
     struct semaphore semaphore;         /**< This semaphore. */
   };
+
+// struct lock_elem {
+//   struct list_elem elem;
+//   struct lock *lock;
+// };
+
+/** Lock. */
+struct lock 
+  {
+    struct list_elem elem;
+    struct thread *holder;      /**< Thread holding lock (for debugging). */
+    struct semaphore semaphore; /**< Binary semaphore controlling access. */
+  };
+
+struct thread * find_max_pri_thread_among_locks (struct list * lock_list);
 struct semaphore * find_and_rm_max_pri_sema (struct list * l);
+void pri_inverse_sema_down (struct lock *lock);
+void pri_inverse_sema_up (struct lock *lock);
+// struct lock_elem * find_lock_elem (struct lock *lock);
+
 void sema_init (struct semaphore *, unsigned value);
 void sema_down (struct semaphore *);
 bool sema_try_down (struct semaphore *);
 void sema_up (struct semaphore *);
 void sema_self_test (void);
 
-/** Lock. */
-struct lock 
-  {
-    struct thread *holder;      /**< Thread holding lock (for debugging). */
-    struct semaphore semaphore; /**< Binary semaphore controlling access. */
-  };
 
 void lock_init (struct lock *);
 void lock_acquire (struct lock *);
