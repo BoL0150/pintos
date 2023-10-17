@@ -424,15 +424,16 @@ thread_set_priority (int new_priority)
   int64_t old_pri = thread_current ()->priority;
   thread_current()->true_pri = new_priority;
   enum intr_level old_level = intr_disable();
-  struct thread * max_pri_thread_blocked_by_cur_thread = find_max_pri_thread_among_locks (&thread_current()->lock_list);
+  struct thread * max_pri_thread_blocked_by_cur_thread = find_max_pri_thread_blocked_by(thread_current());
   intr_set_level(old_level); 
   // 如果当前线程没有阻塞的线程，那么可以直接设置优先级
   // 如果有，则优先级要高于阻塞线程的最高的优先级才行
   if (max_pri_thread_blocked_by_cur_thread == NULL) thread_current ()->priority = new_priority;
   else thread_current()->priority = old_pri > new_priority ? old_pri : new_priority;
+  update_upstream_thread_pri (thread_current(), thread_current()->priority);
 
   if (new_priority >= old_pri) return;
-
+  // 如果优先级降低了，要找到最高的优先级进程，将CPU让给它
   old_level = intr_disable ();
 
   if (list_empty(&ready_list)) {
@@ -575,6 +576,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->magic = THREAD_MAGIC;
   t->true_pri = priority;
   list_init(&t->lock_list);
+  t->blocked_by = NULL;
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);

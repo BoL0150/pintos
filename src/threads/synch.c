@@ -53,26 +53,39 @@ find_and_rm_max_pri_sema (struct list * cond_waiters) {
   return &max_pri_sema_elem->semaphore;
 }
 struct thread *
-find_max_pri_thread_among_locks (struct list * lock_list) {
+get_max_pri_thread (struct thread * a, struct thread * b) {
+  if (a == NULL && b != NULL) return b;
+  if (a != NULL && b == NULL) return a;
+  if (a->priority > b->priority) return a;
+  return b;
+}
+struct thread *
+find_max_pri_thread_blocked_by (struct thread * cur_thread) {
+  ASSERT (cur_thread != NULL);
+  ASSERT (intr_get_level() == INTR_OFF);
+  struct list * lock_list = &cur_thread->lock_list;
   ASSERT (lock_list != NULL);
   if (list_empty(lock_list)) return NULL;
-  ASSERT (intr_get_level() == INTR_OFF);
-  struct list_elem * e;
-  int64_t max_pri = -1;
-  struct thread * max_pri_thread = NULL;
-  for (e = list_begin(lock_list); e != list_end(lock_list); e = list_next(e)) {
-    struct lock *lock = list_entry (e, struct lock, elem);
-    struct list * threads = &lock->semaphore.waiters;
-    if (list_empty(threads)) continue;
-    struct thread * temp = find_max_pri_thread (threads);
-    if (temp->priority > max_pri) {
-      max_pri = temp->priority;
-      max_pri_thread = temp;
+
+  struct thread *max_pri_thread = NULL;
+
+  for (struct list_elem * e = list_begin(lock_list); e != list_end(lock_list); e = list_next(e)) {
+    struct lock *lock = list_entry(e, struct lock, elem);
+    struct list *blocked_threads = &lock->semaphore.waiters;
+    for (struct list_elem * ee = list_begin(blocked_threads); ee != list_end(blocked_threads); ee = list_next(ee)) {
+      struct thread * t = list_entry(ee, struct thread, elem);
+      struct thread * temp = find_max_pri_thread_blocked_by (t);
+      max_pri_thread = get_max_pri_thread(get_max_pri_thread(t, temp), max_pri_thread);
     }
   }
   return max_pri_thread;
 }
-
+// 更新上游的线程的优先级
+void update_upstream_thread_pri (struct thread *t, int priority) {
+  if (t == NULL || t->priority > priority) return;
+  t->priority = priority;
+  update_upstream_thread_pri(t->blocked_by, priority);
+}
 void
 pri_inverse_sema_down (struct lock *lock) 
 {
@@ -88,10 +101,13 @@ pri_inverse_sema_down (struct lock *lock)
     {
       ASSERT (lock_holder != NULL);
       list_push_back (&sema->waiters, &thread_current ()->elem);
+      thread_current()->blocked_by = lock_holder;
       ASSERT (!list_empty(&lock_holder->lock_list));
-      struct thread *max_pri_thread = find_max_pri_thread_among_locks(&lock_holder->lock_list);
+      // struct thread *max_pri_thread = find_max_pri_thread_among_locks(&lock_holder->lock_list);
+      struct thread *max_pri_thread = find_max_pri_thread_blocked_by(lock_holder);
       ASSERT (max_pri_thread != NULL);
-      lock_holder->priority = max (lock_holder->true_pri, max_pri_thread->priority);
+      update_upstream_thread_pri (lock_holder, max_pri_thread->priority);
+      // lock_holder->priority = max (lock_holder->true_pri, max_pri_thread->priority);
       thread_block ();
     }
   list_push_back(&thread_current()->lock_list, &lock->elem);
@@ -114,16 +130,17 @@ pri_inverse_sema_up (struct lock *lock)
   if (!list_empty (&sema->waiters)) {
     wakeup_thread = find_max_pri_thread(&sema->waiters);
     list_remove (&wakeup_thread->elem);
+    wakeup_thread->blocked_by = NULL;
   }
   sema->value++;
   // 当前线程释放锁，就把锁从当前线程的lock_list中移除
   list_remove (&lock->elem);
   // 如果当前线程没有任何阻塞线程，则把优先级恢复成真实的优先级
-  struct thread * max_pri_thread = find_max_pri_thread_among_locks(&thread_current()->lock_list);
+  struct thread * max_pri_thread = find_max_pri_thread_blocked_by(thread_current());
   if (max_pri_thread == NULL)
     thread_current()->priority = thread_current()->true_pri;
   else 
-    thread_current()->priority = max_pri_thread->priority;
+    thread_current()->priority = max(max_pri_thread->priority, thread_current()->true_pri);
   // wakeup一个线程后，将当前线程的优先级更新后，再将该线程唤醒，因为在unblock中有比较当前线程优先级和唤醒线程优先级的操作
   if (wakeup_thread != NULL) yield = thread_unblock (wakeup_thread);
 
@@ -328,16 +345,6 @@ lock_try_acquire (struct lock *lock)
     lock->holder = thread_current ();
   return success;
 }
-// struct lock_elem *
-// find_lock_elem (struct lock *lock) {
-//   struct list_elem * e;
-//   struct list * lock_list = &thread_current()->lock_list;
-//   for (e = list_begin(lock_list); e != list_end(lock_list); e = list_next(e)) {
-//     struct lock_elem * lock_elem = list_entry(e, struct lock_elem, elem);
-//     if (lock_elem->lock == lock)return lock_elem;
-//   }
-//   return NULL;
-// }
 /** Releases LOCK, which must be owned by the current thread.
 
    An interrupt handler cannot acquire a lock, so it does not

@@ -1,0 +1,30 @@
+{
+    "files.associations": {
+        "bit": "c",
+        "*.tcc": "c",
+        "chrono": "c",
+        "functional": "c",
+        "string_view": "c",
+        "random": "c",
+        "istream": "c",
+        "limits": "c",
+        "numeric": "c",
+        "semaphore": "c",
+        "__hash_table": "c",
+        "__mutex_base": "c",
+        "__split_buffer": "c",
+        "__threading_support": "c",
+        "__undef_macros": "c",
+        "algorithm": "c",
+        "cmath": "c",
+        "deque": "c",
+        "memory_resource": "c",
+        "locale": "c",
+        "memory": "c",
+        "mutex": "c",
+        "ratio": "c",
+        "string": "c",
+        "thread": "c",
+        "vector": "c"
+    }
+}

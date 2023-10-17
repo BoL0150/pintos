@@ -32,6 +32,9 @@ struct lock
     struct semaphore semaphore; /**< Binary semaphore controlling access. */
   };
 
+void update_upstream_thread_pri (struct thread *t, int priority);
+struct thread * get_max_pri_thread (struct thread * a, struct thread * b);
+struct thread * find_max_pri_thread_blocked_by (struct thread * cur_thread);
 struct thread * find_max_pri_thread_among_locks (struct list * lock_list);
 struct semaphore * find_and_rm_max_pri_sema (struct list * l);
 void pri_inverse_sema_down (struct lock *lock);
