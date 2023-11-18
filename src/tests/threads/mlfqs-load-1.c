@@ -29,6 +29,7 @@ test_mlfqs_load_1 (void)
   for (;;) 
     {
       load_avg = thread_get_load_avg ();
+      // printf("%d\n", load_avg);
       ASSERT (load_avg >= 0);
       elapsed = timer_elapsed (start_time) / TIMER_FREQ;
       if (load_avg > 100)
@@ -49,6 +50,7 @@ test_mlfqs_load_1 (void)
   timer_sleep (TIMER_FREQ * 10);
 
   load_avg = thread_get_load_avg ();
+  printf("%d\n",load_avg);
   if (load_avg < 0)
     fail ("load average fell below 0");
   if (load_avg > 50)

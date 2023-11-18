@@ -322,7 +322,8 @@ lock_acquire (struct lock *lock)
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
   ASSERT (!lock_held_by_current_thread (lock));
-  pri_inverse_sema_down(lock);
+  if (!thread_mlfqs) pri_inverse_sema_down(lock);
+  else sema_down(&lock->semaphore);
   lock->holder = thread_current ();
 }
 
@@ -357,8 +358,8 @@ lock_release (struct lock *lock)
   ASSERT (lock_held_by_current_thread (lock));
 
   lock->holder = NULL;
-  pri_inverse_sema_up (lock);
-  // sema_up (&lock->semaphore);
+  if(!thread_mlfqs) pri_inverse_sema_up (lock);
+  else sema_up(&lock->semaphore);
 }
 
 /** Returns true if the current thread holds LOCK, false

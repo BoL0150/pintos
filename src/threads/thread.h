@@ -4,7 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
-
+#include "fixed-point.h"
 /** States in a thread's life cycle. */
 enum thread_status
   {
@@ -13,7 +13,6 @@ enum thread_status
     THREAD_BLOCKED,     /**< Waiting for an event to trigger. */
     THREAD_DYING        /**< About to be destroyed. */
   };
-
 /** Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;
@@ -23,6 +22,7 @@ typedef int tid_t;
 #define PRI_MIN 0                       /**< Lowest priority. */
 #define PRI_DEFAULT 31                  /**< Default priority. */
 #define PRI_MAX 63                      /**< Highest priority. */
+#define PRI_QUEUE_NUM (PRI_MAX - PRI_MIN + 1)
 
 /** A kernel thread or user process.
 
@@ -91,9 +91,13 @@ struct thread
     struct list lock_list;              /**< 当前线程持有的锁*/
     struct thread * blocked_by;
     int true_pri;
+    int nice;
+    fp32_t recent_cpu;                 /** fixed-point type */
     struct list_elem allelem;           /**< List element for all threads list. */
     /* Shared between thread.c and synch.c. */
-    struct list_elem elem;              /**< List element. */
+    struct list_elem elem;              /**< List element for ready_list and blocked list in semaphores 
+                                             线程要么就在ready_list中，要么就在semaphores的waiterlist中*/
+    struct list_elem pri_list_elem;     /**< List element for priority queue list*/
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -103,12 +107,19 @@ struct thread
     /* Owned by thread.c. */
     unsigned magic;                     /**< Detects stack overflow. */
   };
-
+// 为sleep功能专门封装了一个struct
 typedef struct{
   int64_t remain_time;
   struct thread * t;
   struct list_elem elem;
 }sleep_thread;
+
+struct thread * find_max_pri_thread_from_pri_queue (void);
+void increase_recent_cpu(void);
+void update_recent_cpu(void);
+void update_load_avg(void);
+bool update_mlfqs_priority(struct thread* t);
+bool update_all_threads_mlfqs_priority(void);
 
 struct thread *
 find_max_pri_thread (struct list * l);
@@ -121,6 +132,10 @@ void update_sleep_list (void);
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 extern bool thread_mlfqs;
+/**
+ * fixed-point type
+*/
+extern fp32_t load_avg;
 
 void thread_init (void);
 void thread_start (void);

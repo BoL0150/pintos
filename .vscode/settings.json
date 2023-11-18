@@ -25,6 +25,9 @@
         "ratio": "c",
         "string": "c",
         "thread": "c",
-        "vector": "c"
+        "vector": "c",
+        "stdint.h": "c",
+        "fixed-point.h": "c",
+        "syscall.h": "c"
     }
 }

@@ -100,12 +100,29 @@ timer_sleep (int64_t ticks)
   // while (timer_elapsed (start) < ticks) 
   //   thread_yield ();
 }
+static void
+update_mlfqs_data(void) {
+  ASSERT(thread_mlfqs);
+  ASSERT(intr_get_level() == INTR_OFF);
+  ASSERT(intr_context());
+
+  increase_recent_cpu();
+  if (ticks % TIMER_FREQ == 0) {
+    update_load_avg();
+    update_recent_cpu();
+  }
+  if (ticks % 4 == 0) {
+    bool yield = update_all_threads_mlfqs_priority();
+    if (yield) intr_yield_on_return();
+  }
+}
 /** Timer interrupt handler. */
 static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
   update_sleep_list();
+  if (thread_mlfqs) update_mlfqs_data();
   thread_tick ();
 }
 

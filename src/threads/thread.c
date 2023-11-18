@@ -12,6 +12,7 @@
 #include "threads/synch.h"
 #include "threads/vaddr.h"
 #include "malloc.h"
+#include "lib/kernel/fixed-point.h"
 #ifdef USERPROG
 #include "userprog/process.h"
 #endif
@@ -23,8 +24,11 @@
 
 /** List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
-static struct list ready_list;
-
+struct list ready_list;
+/** priority queue;使用优先级调度器时只维护ready_list，使用mlfqs时同时维护ready_list和priority_queue
+ * ready_list和priority_queue中记录的线程应该是一样的，每次修改ready_list时一同修改priority_queue
+*/
+static struct list pri_queue[PRI_QUEUE_NUM];
 /** List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
 static struct list all_list;
@@ -37,7 +41,7 @@ static struct thread *initial_thread;
 
 /** Lock used by allocate_tid(). */
 static struct lock tid_lock;
-
+/** 并不是所有sleep的线程都在这个list上，主要维护用户系统调用sleep的线程*/
 static struct list sleep_thread_list;
 
 /** Stack frame for kernel_thread(). */
@@ -61,6 +65,10 @@ static unsigned thread_ticks;   /**< # of timer ticks since last yield. */
    If true, use multi-level feedback queue scheduler.
    Controlled by kernel command-line option "-o mlfqs". */
 bool thread_mlfqs;
+/** 
+ * 最近有多少线程正在竞争CPU，值为定点数，使用int32_t表示
+*/
+fp32_t load_avg = 0;
 
 static void kernel_thread (thread_func *, void *aux);
 
@@ -74,6 +82,65 @@ static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
+void increase_recent_cpu(void) {
+  struct thread *t = thread_current();
+  t->recent_cpu = fp_add_int(t->recent_cpu, 1);
+}
+void update_recent_cpu(void) {
+  ASSERT(intr_get_level() == INTR_OFF);
+  struct list_elem *e;
+  for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)) {
+    struct thread *t = list_entry(e, struct thread, allelem);
+    fp32_t twice_load_avg = fp_mul_int(load_avg, 2);
+    fp32_t coef_recent_cpu = fp_divide(twice_load_avg, fp_add_int(twice_load_avg, 1));
+    t->recent_cpu = fp_add_int(fp_mul(coef_recent_cpu, t->recent_cpu), t->nice);
+  }
+}
+void update_load_avg(void) {
+  fp32_t coef_load_avg = fp_divide(to_fp(59),to_fp(60));
+  fp32_t coef_ready_threads = fp_divide(to_fp(1),to_fp(60));
+  enum intr_level old_level = intr_disable();
+  int32_t ready_threads = list_size(&ready_list) + (thread_current()->tid == 2 ? 0 : 1);
+  load_avg = fp_add(fp_mul(coef_load_avg, load_avg), fp_mul_int(coef_ready_threads, ready_threads)); 
+  intr_set_level(old_level);
+}
+static void clamp_priority(int32_t *priority) {
+  if (*priority > PRI_MAX) *priority = PRI_MAX;
+  if (*priority < PRI_MIN) *priority = PRI_MIN;
+}
+bool update_mlfqs_priority(struct thread* t) {
+  t->priority = to_int_rounding_to_nearest(fp_subtract_int(fp_subtract(to_fp(PRI_MAX), fp_divide_int(t->recent_cpu, 4)), 2 * t->nice));
+  clamp_priority(&t->priority);
+  return true;
+  // enum intr_level old_level = intr_disable();
+  // struct thread * max_pri_thread = find_max_pri_thread_from_pri_queue();
+  // intr_set_level(old_level);
+  // if (max_pri_thread != NULL && max_pri_thread->priority > thread_current()->priority) return true;
+  // return false;
+}
+bool update_all_threads_mlfqs_priority(void) {
+  ASSERT (intr_get_level() == INTR_OFF);
+  struct list_elem *e;
+  int max_pri = 0;
+  for (e = list_begin(&all_list); e != list_end(&all_list); e = list_next(e)) {
+    struct thread *t = list_entry(e, struct thread, allelem);
+    t->priority = to_int_rounding_to_nearest(fp_subtract_int(fp_subtract(to_fp(PRI_MAX), fp_divide_int(t->recent_cpu, 4)), 2 * t->nice));
+    if (t->status == THREAD_READY) max_pri = max_pri > t->priority ? max_pri : t->priority;
+    clamp_priority(&t->priority);
+  }
+  return max_pri > thread_current()->priority;
+}
+struct thread *
+find_max_pri_thread_from_pri_queue (void) {
+  ASSERT (intr_get_level() == INTR_OFF);
+  // ASSERT (!list_empty(&ready_list));
+  for (int i = PRI_MAX; i >= PRI_MIN; i--) {
+    if (list_empty(&pri_queue[i])) continue;
+    return list_entry(list_begin(&pri_queue[i]), struct thread, pri_list_elem);
+  }
+  ASSERT(list_empty(&ready_list));
+  return NULL;
+}
 struct thread *
 find_max_pri_thread (struct list * l) {
   ASSERT (intr_get_level() == INTR_OFF);
@@ -102,6 +169,9 @@ add_to_ready_list (struct thread *t) {
 
   struct thread * cur = thread_current();
   list_push_back (&ready_list,&t->elem);
+  if ( !(t->priority >= PRI_MIN && t->priority <= PRI_MAX)) printf("%d\n", t->priority);
+  ASSERT(t->priority >= PRI_MIN && t->priority <= PRI_MAX);
+  if (thread_mlfqs) list_push_back (&pri_queue[t->priority], &t->pri_list_elem);
   // 如果加入到ready_list中的线程比当前线程的优先级高，那么当前线程马上让出CPU
   // 那么此时调用thread_yield加入到ready_list的线程就是当前线程，与自己的priority相同
   if (t->priority > cur->priority) {
@@ -165,6 +235,12 @@ thread_init (void)
   list_init (&ready_list);
   list_init (&all_list);
   list_init (&sleep_thread_list);
+  if (thread_mlfqs) {
+    load_avg = 0;
+    for (int i = 0; i < PRI_QUEUE_NUM; i++) {
+      list_init(&pri_queue[i]);
+    }
+  }
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
   init_thread (initial_thread, "main", PRI_DEFAULT);
@@ -421,6 +497,7 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
+  if (thread_mlfqs) return;
   int64_t old_pri = thread_current ()->priority;
   thread_current()->true_pri = new_priority;
   enum intr_level old_level = intr_disable();
@@ -460,31 +537,29 @@ thread_get_priority (void)
 void
 thread_set_nice (int nice UNUSED) 
 {
-  /* Not yet implemented. */
+  ASSERT (nice >= -20 && nice <= 20);
+  thread_current()->nice = nice;
 }
 
 /** Returns the current thread's nice value. */
 int
 thread_get_nice (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  return thread_current()->nice;
 }
 
 /** Returns 100 times the system load average. */
 int
 thread_get_load_avg (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  return to_int_rounding_to_nearest(fp_mul_int(load_avg, 100));
 }
 
 /** Returns 100 times the current thread's recent_cpu value. */
 int
 thread_get_recent_cpu (void) 
 {
-  /* Not yet implemented. */
-  return 0;
+  return to_int_rounding_to_nearest(fp_mul_int(thread_current()->recent_cpu, 100));
 }
 
 /** Idle thread.  Executes when no other thread is ready to run.
@@ -570,9 +645,14 @@ init_thread (struct thread *t, const char *name, int priority)
 
   memset (t, 0, sizeof *t);
   t->status = THREAD_BLOCKED;
+  t->recent_cpu = 0;
+
+  t->nice = 0;
+
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
-  t->priority = priority;
+  if (!thread_mlfqs) t->priority = priority;
+  else update_mlfqs_priority(t);
   t->magic = THREAD_MAGIC;
   t->true_pri = priority;
   list_init(&t->lock_list);
@@ -580,6 +660,11 @@ init_thread (struct thread *t, const char *name, int priority)
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
+
+  // if (thread_mlfqs) {
+  //   struct list queue_list = pri_queue[t->priority];
+  //   list_push_back(&queue_list, &t->pri_list_elem);
+  // }
   intr_set_level (old_level);
 }
 
@@ -608,7 +693,14 @@ next_thread_to_run (void)
   if (list_empty (&ready_list))
     return idle_thread;
     // return list_entry (list_pop_front (&ready_list), struct thread, elem);
-  struct thread * next_thread = find_max_pri_thread(&ready_list);
+  struct thread * next_thread;
+  if (!thread_mlfqs) next_thread = find_max_pri_thread(&ready_list);
+  else {
+    next_thread = find_max_pri_thread_from_pri_queue();
+    ASSERT (next_thread != NULL);
+    find_max_pri_thread(&ready_list);
+    list_remove (&next_thread->pri_list_elem);
+  }
   list_remove (&next_thread->elem);
   return next_thread;
 }

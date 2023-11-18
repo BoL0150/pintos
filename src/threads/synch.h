@@ -19,11 +19,6 @@ struct semaphore_elem
     struct semaphore semaphore;         /**< This semaphore. */
   };
 
-// struct lock_elem {
-//   struct list_elem elem;
-//   struct lock *lock;
-// };
-
 /** Lock. */
 struct lock 
   {
@@ -39,7 +34,6 @@ struct thread * find_max_pri_thread_among_locks (struct list * lock_list);
 struct semaphore * find_and_rm_max_pri_sema (struct list * l);
 void pri_inverse_sema_down (struct lock *lock);
 void pri_inverse_sema_up (struct lock *lock);
-// struct lock_elem * find_lock_elem (struct lock *lock);
 
 void sema_init (struct semaphore *, unsigned value);
 void sema_down (struct semaphore *);

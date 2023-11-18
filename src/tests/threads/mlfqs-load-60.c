@@ -106,7 +106,7 @@
 #include "devices/timer.h"
 
 static int64_t start_time;
-
+extern struct list ready_list;
 static void load_thread (void *aux);
 
 #define THREAD_CNT 60
@@ -125,6 +125,7 @@ test_mlfqs_load_60 (void)
       char name[16];
       snprintf(name, sizeof name, "load %d", i);
       thread_create (name, PRI_DEFAULT, load_thread, NULL);
+      // printf("load_avg:%d,ready_list_size:%d\n",thread_get_load_avg(), list_size(&ready_list));
     }
   msg ("Starting threads took %d seconds.",
        timer_elapsed (start_time) / TIMER_FREQ);
