@@ -17,29 +17,63 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "string.h"
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
+static void pass_argument(const char **argv) {
+  uint32_t sp = PHYS_BASE;
+  uint32_t u_arg_address[MAXARG];
+  int argc;
+  for (argc = 0; argv[argc]; argc++) {
+    sp -= strlen(argv[argc]) + 1;
+    sp -= sp % 4;
+    strlcpy((char*)sp, argv[argc], strlen(argv[argc]) + 1); // strlcpy的size是字符串长度加终止符
+    u_arg_address[argc] = sp;
+  }
+  u_arg_address[argc] = 0;
+  sp -= (argc + 1) * sizeof(uint32_t);
+  sp -= sp % 4;
+  strlcpy((char*)sp, (char*)u_arg_address, (argc + 1) * sizeof(uint32_t));
+  sp -= 4;
+  memset((char*)sp, (int)u_arg_address, 4);
+  sp -= 4;
+  memset((char*)sp, argc, 4);
+  sp -= 4;
+  memset((char*)sp, 0, 4); // fake return address
+}
+static char ** split_command_line(char *command_line) {
+  // command_line的大小不会超过128字节，我使用给它分配的后半的page存指针
+  char **argv = (char**)(command_line + PGSIZE / 2);
+  char *save_ptr;
+  int argc = 0;
+  for (char *token = strtok_r(command_line, " ", &save_ptr); token != NULL; token = strtok_r(NULL, " ", &save_ptr)) {
+      argv[argc++] = token; 
+  }
+  argv[argc] = 0;
+  return argv;
+}
 /** Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    thread id, or TID_ERROR if the thread cannot be created. */
 tid_t
-process_execute (const char *file_name) 
+process_execute (const char *command_line) 
 {
   char *fn_copy;
   tid_t tid;
 
-  /* Make a copy of FILE_NAME.
+  /* Make a copy of command_line.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
   if (fn_copy == NULL)
     return TID_ERROR;
-  strlcpy (fn_copy, file_name, PGSIZE);
+  strlcpy (fn_copy, command_line, PGSIZE);
 
-  /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
+  char **argv = split_command_line(fn_copy);
+  /* Create a new thread to execute command_line. */
+  tid = thread_create (argv[0], PRI_DEFAULT, start_process, argv);
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   return tid;
@@ -48,9 +82,9 @@ process_execute (const char *file_name)
 /** A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (char **argv)
 {
-  char *file_name = file_name_;
+  char *file_name = argv[0];
   struct intr_frame if_;
   bool success;
 
@@ -59,6 +93,7 @@ start_process (void *file_name_)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
+  pass_argument(argv);
   success = load (file_name, &if_.eip, &if_.esp);
 
   /* If load failed, quit. */

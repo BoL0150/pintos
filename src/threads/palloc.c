@@ -46,6 +46,8 @@ void
 palloc_init (size_t user_page_limit)
 {
   /* Free memory starts at 1 MB and runs to the end of RAM. */
+  // 从物理内存的1MB开始到物理内存结束的内存是可分配的空闲内存，1MB下面是内核的加载位置
+  // 将他们转换成对应的内核虚拟地址（内核虚拟地址从3GB开始，与物理地址从0开始一一对应）
   uint8_t *free_start = ptov (1024 * 1024);
   uint8_t *free_end = ptov (init_ram_pages * PGSIZE);
   size_t free_pages = (free_end - free_start) / PGSIZE;
