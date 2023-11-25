@@ -18,11 +18,11 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "string.h"
-
+#include "devices/timer.h"
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
-static void pass_argument(const char **argv) {
+static uint32_t pass_argument(const char **argv) {
   uint32_t sp = PHYS_BASE;
   uint32_t u_arg_address[MAXARG];
   int argc;
@@ -37,11 +37,12 @@ static void pass_argument(const char **argv) {
   sp -= sp % 4;
   strlcpy((char*)sp, (char*)u_arg_address, (argc + 1) * sizeof(uint32_t));
   sp -= 4;
-  memset((char*)sp, (int)u_arg_address, 4);
+  *(uint32_t *)sp = sp + 4; // argv地址
   sp -= 4;
-  memset((char*)sp, argc, 4);
+  *(uint32_t *)sp = argc;
   sp -= 4;
-  memset((char*)sp, 0, 4); // fake return address
+  *(uint32_t *)sp = 0; // fake return address
+  return sp;
 }
 static char ** split_command_line(char *command_line) {
   // command_line的大小不会超过128字节，我使用给它分配的后半的page存指针
@@ -82,9 +83,10 @@ process_execute (const char *command_line)
 /** A thread function that loads a user process and starts it
    running. */
 static void
-start_process (char **argv)
+start_process (void *argv_)
 {
-  char *file_name = argv[0];
+  const char **argv = (const char**)argv_; 
+  const char *file_name = argv[0];
   struct intr_frame if_;
   bool success;
 
@@ -93,8 +95,13 @@ start_process (char **argv)
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
   if_.eflags = FLAG_IF | FLAG_MBS;
-  pass_argument(argv);
+
   success = load (file_name, &if_.eip, &if_.esp);
+
+  if_.esp = (void*)pass_argument(argv);
+  int size = PHYS_BASE - (uint32_t)if_.esp;
+  hex_dump(if_.esp, if_.esp, size, true);
+  // printf("*****************%x***************\n", (uint32_t)if_.esp);
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
@@ -123,6 +130,7 @@ start_process (char **argv)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
+  timer_sleep(40);
   return -1;
 }
 

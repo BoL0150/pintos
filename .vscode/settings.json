@@ -30,6 +30,10 @@
         "fixed-point.h": "c",
         "syscall.h": "c",
         "string.h": "c",
-        "process.h": "c"
+        "process.h": "c",
+        "stdio.h": "c",
+        "timer.h": "c",
+        "round.h": "c",
+        "init.h": "c"
     }
 }

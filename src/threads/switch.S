@@ -37,6 +37,7 @@ switch_threads:
 	movl %esp, (%eax,%edx,1)
 
 	# Restore stack pointer from new thread's stack.
+	# 从这一条指令开始，运行的进程就是new thread了，因为esp改变了，所以thread_running()得到的结果也变了
 	movl SWITCH_NEXT(%esp), %ecx
 	movl (%ecx,%edx,1), %esp
 
