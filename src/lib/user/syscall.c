@@ -1,4 +1,5 @@
 #include <syscall.h>
+#include "../stdio.h"
 #include "../syscall-nr.h"
 
 /** Invokes syscall NUMBER, passing no arguments, and returns the
@@ -64,6 +65,8 @@
 void
 halt (void) 
 {
+  printf("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\n");
+  printf("##################%d################\n", SYS_HALT);
   syscall0 (SYS_HALT);
   NOT_REACHED ();
 }

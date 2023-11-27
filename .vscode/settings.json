@@ -34,6 +34,7 @@
         "stdio.h": "c",
         "timer.h": "c",
         "round.h": "c",
-        "init.h": "c"
+        "init.h": "c",
+        "shutdown.h": "c"
     }
 }

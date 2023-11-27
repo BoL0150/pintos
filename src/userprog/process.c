@@ -64,7 +64,7 @@ process_execute (const char *command_line)
 {
   char *fn_copy;
   tid_t tid;
-
+  ASSERT (strlen(command_line) < PGSIZE / 2);
   /* Make a copy of command_line.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page (0);
@@ -100,7 +100,7 @@ start_process (void *argv_)
 
   if_.esp = (void*)pass_argument(argv);
   int size = PHYS_BASE - (uint32_t)if_.esp;
-  hex_dump(if_.esp, if_.esp, size, true);
+  // hex_dump(if_.esp, if_.esp, size, true);
   // printf("*****************%x***************\n", (uint32_t)if_.esp);
 
   /* If load failed, quit. */
