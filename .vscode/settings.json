@@ -35,6 +35,8 @@
         "timer.h": "c",
         "round.h": "c",
         "init.h": "c",
-        "shutdown.h": "c"
+        "shutdown.h": "c",
+        "stdbool.h": "c",
+        "syscall-nr.h": "c"
     }
 }

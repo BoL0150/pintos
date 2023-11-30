@@ -78,7 +78,10 @@ kill (struct intr_frame *f)
      the kernel.  Real Unix-like operating systems pass most
      exceptions back to the process via signals, but we don't
      implement them. */
-     
+
+   // 被异常kill的线程exit_state设为-1
+   thread_current()->exit_state = -1;
+   printf("%s: exit(%d)\n",thread_current()->name, thread_current()->tid);
   /* The interrupt frame's code segment value tells us where the
      exception originated. */
   switch (f->cs)

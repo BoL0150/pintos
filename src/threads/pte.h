@@ -72,7 +72,6 @@ static inline uint32_t pde_create (uint32_t *pt) {
   ASSERT (pg_ofs (pt) == 0);
   return vtop (pt) | PTE_U | PTE_P | PTE_W;
 }
-
 /** Returns a pointer to the page table that page directory entry
    PDE, which must "present", points to. */
 static inline uint32_t *pde_get_pt (uint32_t pde) {

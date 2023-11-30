@@ -5,6 +5,7 @@
 #include <list.h>
 #include <stdint.h>
 #include "fixed-point.h"
+#include "filesys/file.h"
 /** States in a thread's life cycle. */
 enum thread_status
   {
@@ -23,7 +24,6 @@ typedef int tid_t;
 #define PRI_DEFAULT 31                  /**< Default priority. */
 #define PRI_MAX 63                      /**< Highest priority. */
 #define PRI_QUEUE_NUM (PRI_MAX - PRI_MIN + 1)
-
 /** A kernel thread or user process.
 
    Each thread structure is stored in its own 4 kB page.  The
@@ -85,10 +85,13 @@ struct thread
     /* Owned by thread.c. */
     tid_t tid;                          /**< Thread identifier. */
     enum thread_status status;          /**< Thread state. */
+    int exit_state;                     /**< exit state to be returned to parent's wait*/
+    struct thread *parent;              /**< parent process*/
     char name[16];                      /**< Name (for debugging purposes). */
     uint8_t *stack;                     /**< Saved stack pointer. */
     int priority;                       /**< Priority. */
     struct list lock_list;              /**< 当前线程持有的锁*/
+    struct list child_list;             /**< 当前线程exec的所有子线程，元素中记录了对应线程的tid和退出状态*/
     struct thread * blocked_by;
     int true_pri;
     int nice;
@@ -98,7 +101,7 @@ struct thread
     struct list_elem elem;              /**< List element for ready_list and blocked list in semaphores 
                                              线程要么就在ready_list中，要么就在semaphores的waiterlist中*/
     struct list_elem pri_list_elem;     /**< List element for priority queue list*/
-
+    struct file *ofile[FDNUM];          /**< 进程打开文件表*/
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /**< Page directory. */
@@ -113,6 +116,13 @@ typedef struct{
   struct thread * t;
   struct list_elem elem;
 }sleep_thread;
+
+struct thread_exit_state{
+   tid_t tid;
+   int exit_state;
+   struct semaphore sema;
+   struct list_elem child_list_elem;
+};
 
 struct thread * find_max_pri_thread_from_pri_queue (void);
 void increase_recent_cpu(void);

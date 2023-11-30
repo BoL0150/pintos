@@ -2,7 +2,7 @@
 #include <debug.h>
 #include "filesys/inode.h"
 #include "threads/malloc.h"
-
+#include "threads/thread.h"
 /** An open file. */
 struct file 
   {
@@ -11,6 +11,16 @@ struct file
     bool deny_write;            /**< Has file_deny_write() been called? */
   };
 
+uint32_t fdalloc(struct file *f) {
+  struct thread * t = thread_current();
+  // fd0和fd1保留给控制台的标准输入输出
+  for (int fd = 2; fd < FDNUM; fd++) {
+    if (t->ofile[fd] != NULL) continue;
+    t->ofile[fd] = f;
+    return fd;
+  }
+  return -1;
+}
 /** Opens a file for the given INODE, of which it takes ownership,
    and returns the new file.  Returns a null pointer if an
    allocation fails or if INODE is null. */

@@ -19,6 +19,7 @@
 #include "threads/vaddr.h"
 #include "string.h"
 #include "devices/timer.h"
+#include "synch.h"
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
@@ -73,19 +74,34 @@ process_execute (const char *command_line)
   strlcpy (fn_copy, command_line, PGSIZE);
 
   char **argv = split_command_line(fn_copy);
+  bool load_success = true;
+  struct semaphore sema;
+  sema_init(&sema, 0);
+  void* args[3] = {argv, &load_success, &sema};
   /* Create a new thread to execute command_line. */
-  tid = thread_create (argv[0], PRI_DEFAULT, start_process, argv);
-  if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+  tid = thread_create (argv[0], PRI_DEFAULT, start_process, args);
+
+  if (tid != TID_ERROR) {
+    sema_down(&sema); // 如果成功创建了新线程，还要等新线程成功load可执行文件才能返回
+    tid = load_success ? tid : TID_ERROR;
+  }
+  if (tid == TID_ERROR) {
+    palloc_free_page (fn_copy);
+  }
   return tid;
 }
 
 /** A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *argv_)
+start_process (void *args)
 {
-  const char **argv = (const char**)argv_; 
+  ASSERT(args != NULL);
+  void **args_array = (void**)args;
+  char **argv = (char**)args_array[0];
+  bool *load_success= (bool*)args_array[1];
+  struct semaphore *sema = (struct semaphore*)args_array[2];
+
   const char *file_name = argv[0];
   struct intr_frame if_;
   bool success;
@@ -97,7 +113,8 @@ start_process (void *argv_)
   if_.eflags = FLAG_IF | FLAG_MBS;
 
   success = load (file_name, &if_.eip, &if_.esp);
-
+  *load_success = success;
+  sema_up(sema); // 加载完成，唤醒父进程
   if_.esp = (void*)pass_argument(argv);
   int size = PHYS_BASE - (uint32_t)if_.esp;
   // hex_dump(if_.esp, if_.esp, size, true);
@@ -105,8 +122,9 @@ start_process (void *argv_)
 
   /* If load failed, quit. */
   palloc_free_page (file_name);
-  if (!success) 
+  if (!success) {
     thread_exit ();
+  }
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -130,7 +148,19 @@ start_process (void *argv_)
 int
 process_wait (tid_t child_tid UNUSED) 
 {
-  timer_sleep(40);
+  struct list *child_list = &thread_current()->child_list;
+  ASSERT(child_list != NULL);
+  ASSERT(!list_empty(child_list));
+  for (struct list_elem *e = list_begin(child_list); e != list_end(child_list); e = list_next(child_list)) {
+    struct thread_exit_state *tes = list_entry(e, struct thread_exit_state, child_list_elem);
+    if (tes->tid != child_tid) continue;
+    sema_down(&tes->sema);
+    int exit_state = tes->exit_state;
+    // wait完之后就可以把结构体删了，因为pintos规定不能在一个pid上wait多次
+    list_remove(e);
+    free(tes);
+    return exit_state;
+  }
   return -1;
 }
 

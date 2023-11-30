@@ -435,7 +435,18 @@ thread_tid (void)
 {
   return thread_current ()->tid;
 }
-
+static void
+update_tes(void) {
+  struct thread *parent = thread_current()->parent;
+  ASSERT(parent != NULL);
+  ASSERT(!list_empty(&parent->child_list));
+  for (struct list_elem *e = list_begin(&parent->child_list); e != list_end(&parent->child_list); e = list_next(&parent->child_list)) {
+    struct thread_exit_state *tes = list_entry(e, struct thread_exit_state, child_list_elem);
+    if (tes->tid != thread_current()->tid) continue;
+    tes->exit_state = thread_current()->exit_state;
+    sema_up(&tes->sema);
+  }
+}
 /** Deschedules the current thread and destroys it.  Never
    returns to the caller. */
 void
@@ -453,6 +464,9 @@ thread_exit (void)
   intr_disable ();
   list_remove (&thread_current()->allelem);
   thread_current ()->status = THREAD_DYING;
+  if (thread_current() != initial_thread) update_tes();
+  free_child_list(thread_current());
+  free_open_file(thread_current());
   schedule ();
   NOT_REACHED ();
 }
@@ -631,7 +645,11 @@ is_thread (struct thread *t)
 {
   return t != NULL && t->magic == THREAD_MAGIC;
 }
-
+static void
+init_tes(struct thread_exit_state *tes, struct thread *t) {
+  tes->tid = t->tid;
+  sema_init(&tes->sema, 0);
+}
 /** Does basic initialization of T as a blocked thread named
    NAME. */
 static void
@@ -646,7 +664,9 @@ init_thread (struct thread *t, const char *name, int priority)
   memset (t, 0, sizeof *t);
   t->status = THREAD_BLOCKED;
   t->recent_cpu = 0;
-
+  t->exit_state = 0;
+  t->parent = thread_current();
+  
   t->nice = 0;
 
   strlcpy (t->name, name, sizeof t->name);
@@ -656,6 +676,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->magic = THREAD_MAGIC;
   t->true_pri = priority;
   list_init(&t->lock_list);
+  list_init(&t->child_list);
   t->blocked_by = NULL;
 
   old_level = intr_disable ();
@@ -666,6 +687,10 @@ init_thread (struct thread *t, const char *name, int priority)
   //   list_push_back(&queue_list, &t->pri_list_elem);
   // }
   intr_set_level (old_level);
+
+  struct thread_exit_state *tes = (struct thread_exit_state*) malloc(sizeof(struct thread_exit_state));
+  init_tes(tes, t);
+  list_push_back(&thread_current()->child_list, &tes->child_list_elem);
 }
 
 /** Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -704,7 +729,22 @@ next_thread_to_run (void)
   list_remove (&next_thread->elem);
   return next_thread;
 }
-
+static void
+free_open_file(struct thread* t) {
+  for (int fd = 0; fd < FDNUM; fd++) {
+    if (t->ofile[fd] == NULL) continue;
+    file_close(t->ofile[fd]);
+    t->ofile[fd] = NULL;
+  }
+}
+static void
+free_child_list(struct thread* t) {
+  struct list_elem *e;
+  for (e = list_begin(&t->child_list); e != list_end(&t->child_list); e = list_remove(e)) {
+    struct thread_exit_state *tes = list_entry(e, struct thread_exit_state, child_list_elem);
+    free(tes);
+  }
+}
 /** Completes a thread switch by activating the new thread's page
    tables, and, if the previous thread is dying, destroying it.
 
@@ -730,15 +770,12 @@ thread_schedule_tail (struct thread *prev)
 
   /* Mark us as running. */
   cur->status = THREAD_RUNNING;
-
   /* Start new time slice. */
   thread_ticks = 0;
-
 #ifdef USERPROG
   /* Activate the new address space. */
   process_activate ();
 #endif
-
   /* If the thread we switched from is dying, destroy its struct
      thread.  This must happen late so that thread_exit() doesn't
      pull out the rug under itself.  (We don't free
@@ -747,6 +784,7 @@ thread_schedule_tail (struct thread *prev)
   if (prev != NULL && prev->status == THREAD_DYING && prev != initial_thread) 
     {
       ASSERT (prev != cur);
+      
       palloc_free_page (prev);
     }
 }

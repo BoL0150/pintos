@@ -2,9 +2,10 @@
 #define FILESYS_FILE_H
 
 #include "filesys/off_t.h"
-
+#define FDNUM 32                        /**< 一个进程中的文件描述符个数*/
 struct inode;
 
+uint32_t fdalloc(struct file *f);
 /** Opening and closing files. */
 struct file *file_open (struct inode *);
 struct file *file_reopen (struct file *);
