@@ -17,9 +17,10 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
 #include "string.h"
 #include "devices/timer.h"
-#include "synch.h"
+#include "threads/synch.h"
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
@@ -80,13 +81,14 @@ process_execute (const char *command_line)
   void* args[3] = {argv, &load_success, &sema};
   /* Create a new thread to execute command_line. */
   tid = thread_create (argv[0], PRI_DEFAULT, start_process, args);
-
+  // thread_create出现error，由当前进程释放fn_copy；
+  // 如果thread_create成功了，由子进程释放fn_copy,当前进程不需要重复释放
+  if (tid == TID_ERROR) { 
+    palloc_free_page (fn_copy);
+  }
   if (tid != TID_ERROR) {
     sema_down(&sema); // 如果成功创建了新线程，还要等新线程成功load可执行文件才能返回
-    tid = load_success ? tid : TID_ERROR;
-  }
-  if (tid == TID_ERROR) {
-    palloc_free_page (fn_copy);
+    tid = load_success ? tid : TID_ERROR; // thread_create没有error，但是load出现了error，
   }
   return tid;
 }
@@ -98,7 +100,7 @@ start_process (void *args)
 {
   ASSERT(args != NULL);
   void **args_array = (void**)args;
-  char **argv = (char**)args_array[0];
+  const char **argv = (const char**)args_array[0];
   bool *load_success= (bool*)args_array[1];
   struct semaphore *sema = (struct semaphore*)args_array[2];
 
@@ -114,14 +116,14 @@ start_process (void *args)
 
   success = load (file_name, &if_.eip, &if_.esp);
   *load_success = success;
-  sema_up(sema); // 加载完成，唤醒父进程
-  if_.esp = (void*)pass_argument(argv);
-  int size = PHYS_BASE - (uint32_t)if_.esp;
-  // hex_dump(if_.esp, if_.esp, size, true);
-  // printf("*****************%x***************\n", (uint32_t)if_.esp);
+
+  // 加载完成，唤醒父进程
+  sema_up(sema); 
+  // 如果加载成功，向进程中传递命令行参数
+  if (success) if_.esp = (void*)pass_argument(argv); 
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
+  palloc_free_page ((void*)file_name);
   if (!success) {
     thread_exit ();
   }
@@ -150,8 +152,8 @@ process_wait (tid_t child_tid UNUSED)
 {
   struct list *child_list = &thread_current()->child_list;
   ASSERT(child_list != NULL);
-  ASSERT(!list_empty(child_list));
-  for (struct list_elem *e = list_begin(child_list); e != list_end(child_list); e = list_next(child_list)) {
+  // ASSERT(!list_empty(child_list));
+  for (struct list_elem *e = list_begin(child_list); e != list_end(child_list); e = list_next(e)) {
     struct thread_exit_state *tes = list_entry(e, struct thread_exit_state, child_list_elem);
     if (tes->tid != child_tid) continue;
     sema_down(&tes->sema);
@@ -163,7 +165,13 @@ process_wait (tid_t child_tid UNUSED)
   }
   return -1;
 }
-
+// 用户进程导致的exit
+void exit_from_user_process(int exit_state) {
+  thread_current()->exit_state = exit_state;
+  printf("%s: exit(%d)\n",thread_current()->name, exit_state);
+  thread_exit();
+  NOT_REACHED ();
+}
 /** Free the current process's resources. */
 void
 process_exit (void)
@@ -301,6 +309,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
+
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr

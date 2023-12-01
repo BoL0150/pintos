@@ -37,6 +37,23 @@
         "init.h": "c",
         "shutdown.h": "c",
         "stdbool.h": "c",
-        "syscall-nr.h": "c"
+        "syscall-nr.h": "c",
+        "*.inc": "c",
+        "io_context": "c",
+        "iosfwd": "c",
+        "stop_token": "c",
+        "streambuf": "c",
+        "thread.h": "c",
+        "gdt.h": "c",
+        "pagedir.h": "c",
+        "tss.h": "c",
+        "directory.h": "c",
+        "file.h": "c",
+        "filesys.h": "c",
+        "flags.h": "c",
+        "interrupt.h": "c",
+        "malloc.h": "c",
+        "typeinfo": "c",
+        "executor": "c"
     }
 }

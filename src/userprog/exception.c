@@ -4,7 +4,6 @@
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
-
 /** Number of page faults processed. */
 static long long page_fault_cnt;
 
@@ -81,7 +80,7 @@ kill (struct intr_frame *f)
 
    // 被异常kill的线程exit_state设为-1
    thread_current()->exit_state = -1;
-   printf("%s: exit(%d)\n",thread_current()->name, thread_current()->tid);
+   printf("%s: exit(%d)\n",thread_current()->name, thread_current()->exit_state);
   /* The interrupt frame's code segment value tells us where the
      exception originated. */
   switch (f->cs)

@@ -86,16 +86,16 @@ void update_upstream_thread_pri (struct thread *t, int priority) {
   t->priority = priority;
   update_upstream_thread_pri(t->blocked_by, priority);
 }
+extern struct list ready_list;
 void
 pri_inverse_sema_down (struct lock *lock) 
 {
-  enum intr_level old_level;
-
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
+  ASSERT (intr_get_level() == INTR_OFF);
+  // old_level = intr_disable ();
   struct semaphore *sema = &lock->semaphore;
   struct thread * lock_holder = lock->holder;
-  old_level = intr_disable ();
 
   while (sema->value == 0) 
     {
@@ -112,19 +112,19 @@ pri_inverse_sema_down (struct lock *lock)
     }
   list_push_back(&thread_current()->lock_list, &lock->elem);
   sema->value--;
-  intr_set_level (old_level);
+  // intr_set_level (old_level);
 }
 
 
-void
+bool
 pri_inverse_sema_up (struct lock *lock) 
 {
-  enum intr_level old_level;
   bool yield = false;
   ASSERT (lock != NULL);
+  ASSERT (intr_get_level() == INTR_OFF);
   struct semaphore * sema = &lock->semaphore;
 
-  old_level = intr_disable ();
+  // old_level = intr_disable ();
 
   struct thread * wakeup_thread = NULL;
   if (!list_empty (&sema->waiters)) {
@@ -144,12 +144,13 @@ pri_inverse_sema_up (struct lock *lock)
   // wakeup一个线程后，将当前线程的优先级更新后，再将该线程唤醒，因为在unblock中有比较当前线程优先级和唤醒线程优先级的操作
   if (wakeup_thread != NULL) yield = thread_unblock (wakeup_thread);
 
-  intr_set_level (old_level);
+  // intr_set_level (old_level);
+  return yield;
   // 原子性结束，可以切换线程
-  if (yield) {
-    if (intr_context ()) intr_yield_on_return ();
-    else thread_yield ();
-  }
+  // if (yield) {
+  //   if (intr_context ()) intr_yield_on_return ();
+  //   else thread_yield ();
+  // }
 }
 /** Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
@@ -321,10 +322,16 @@ lock_acquire (struct lock *lock)
 {
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
+  // 保持lock->holder、lock->sema、lock->hodler->lock_list的更新的原子性
+  enum intr_level old_level = intr_disable();
+
   ASSERT (!lock_held_by_current_thread (lock));
-  if (!thread_mlfqs) pri_inverse_sema_down(lock);
-  else sema_down(&lock->semaphore);
+  // if (!thread_mlfqs) pri_inverse_sema_down(lock);
+  // else sema_down(&lock->semaphore);
+  sema_down(&lock->semaphore);
   lock->holder = thread_current ();
+
+  intr_set_level(old_level);
 }
 
 /** Tries to acquires LOCK and returns true if successful or false
@@ -355,11 +362,21 @@ void
 lock_release (struct lock *lock) 
 {
   ASSERT (lock != NULL);
-  ASSERT (lock_held_by_current_thread (lock));
+  bool yield = false;
+  enum intr_level old_level = intr_disable();
 
+  ASSERT (lock_held_by_current_thread (lock));
   lock->holder = NULL;
-  if(!thread_mlfqs) pri_inverse_sema_up (lock);
-  else sema_up(&lock->semaphore);
+  // if(!thread_mlfqs) yield = pri_inverse_sema_up (lock);
+  // else sema_up(&lock->semaphore);
+  sema_up(&lock->semaphore);
+  intr_set_level(old_level);
+
+  if (yield) {
+    if (intr_context ()) intr_yield_on_return ();
+    else thread_yield ();
+  }
+  // sema_up(&lock->semaphore);
 }
 
 /** Returns true if the current thread holds LOCK, false

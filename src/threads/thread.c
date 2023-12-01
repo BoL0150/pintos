@@ -31,7 +31,7 @@ struct list ready_list;
 static struct list pri_queue[PRI_QUEUE_NUM];
 /** List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
-static struct list all_list;
+struct list all_list;
 
 /** Idle thread. */
 static struct thread *idle_thread;
@@ -81,6 +81,32 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+
+static void
+init_tes(struct thread_exit_state *tes, struct thread *t) {
+  tes->tid = t->tid;
+  sema_init(&tes->sema, 0);
+}
+static void
+free_open_file(struct thread* t) {
+  for (int fd = 0; fd < FDNUM; fd++) {
+    if (t->ofile[fd] == NULL) continue;
+    file_close(t->ofile[fd]);
+    t->ofile[fd] = NULL;
+  }
+}
+static void
+free_child_list(struct thread* t) {
+  while(!list_empty(&t->child_list)) {
+    struct list_elem *e = list_pop_front(&t->child_list);
+    struct thread_exit_state *tes = list_entry(e, struct thread_exit_state, child_list_elem);
+    free(tes);
+  }
+  // for (e = list_begin(&t->child_list); e != list_end(&t->child_list); e = list_remove(e)) {
+  //   struct thread_exit_state *tes = list_entry(e, struct thread_exit_state, child_list_elem);
+  //   free(tes);
+  // }
+}
 
 void increase_recent_cpu(void) {
   struct thread *t = thread_current();
@@ -329,7 +355,13 @@ thread_create (const char *name, int priority,
 
   /* Initialize thread. */
   init_thread (t, name, priority);
+
   tid = t->tid = allocate_tid ();
+
+  t->parent = thread_current();
+  struct thread_exit_state *tes = (struct thread_exit_state*) malloc(sizeof(struct thread_exit_state));
+  init_tes(tes, t);
+  list_push_back(&thread_current()->child_list, &tes->child_list_elem);
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
@@ -440,7 +472,7 @@ update_tes(void) {
   struct thread *parent = thread_current()->parent;
   ASSERT(parent != NULL);
   ASSERT(!list_empty(&parent->child_list));
-  for (struct list_elem *e = list_begin(&parent->child_list); e != list_end(&parent->child_list); e = list_next(&parent->child_list)) {
+  for (struct list_elem *e = list_begin(&parent->child_list); e != list_end(&parent->child_list); e = list_next(e)) {
     struct thread_exit_state *tes = list_entry(e, struct thread_exit_state, child_list_elem);
     if (tes->tid != thread_current()->tid) continue;
     tes->exit_state = thread_current()->exit_state;
@@ -453,6 +485,7 @@ void
 thread_exit (void) 
 {
   ASSERT (!intr_context ());
+  // printf("FUCK YOU THREAD EXIT!!!\n");
 
 #ifdef USERPROG
   process_exit ();
@@ -463,10 +496,10 @@ thread_exit (void)
      when it calls thread_schedule_tail(). */
   intr_disable ();
   list_remove (&thread_current()->allelem);
-  thread_current ()->status = THREAD_DYING;
   if (thread_current() != initial_thread) update_tes();
   free_child_list(thread_current());
   free_open_file(thread_current());
+  thread_current ()->status = THREAD_DYING;
   schedule ();
   NOT_REACHED ();
 }
@@ -645,11 +678,6 @@ is_thread (struct thread *t)
 {
   return t != NULL && t->magic == THREAD_MAGIC;
 }
-static void
-init_tes(struct thread_exit_state *tes, struct thread *t) {
-  tes->tid = t->tid;
-  sema_init(&tes->sema, 0);
-}
 /** Does basic initialization of T as a blocked thread named
    NAME. */
 static void
@@ -665,7 +693,6 @@ init_thread (struct thread *t, const char *name, int priority)
   t->status = THREAD_BLOCKED;
   t->recent_cpu = 0;
   t->exit_state = 0;
-  t->parent = thread_current();
   
   t->nice = 0;
 
@@ -687,10 +714,6 @@ init_thread (struct thread *t, const char *name, int priority)
   //   list_push_back(&queue_list, &t->pri_list_elem);
   // }
   intr_set_level (old_level);
-
-  struct thread_exit_state *tes = (struct thread_exit_state*) malloc(sizeof(struct thread_exit_state));
-  init_tes(tes, t);
-  list_push_back(&thread_current()->child_list, &tes->child_list_elem);
 }
 
 /** Allocates a SIZE-byte frame at the top of thread T's stack and
@@ -728,22 +751,6 @@ next_thread_to_run (void)
   }
   list_remove (&next_thread->elem);
   return next_thread;
-}
-static void
-free_open_file(struct thread* t) {
-  for (int fd = 0; fd < FDNUM; fd++) {
-    if (t->ofile[fd] == NULL) continue;
-    file_close(t->ofile[fd]);
-    t->ofile[fd] = NULL;
-  }
-}
-static void
-free_child_list(struct thread* t) {
-  struct list_elem *e;
-  for (e = list_begin(&t->child_list); e != list_end(&t->child_list); e = list_remove(e)) {
-    struct thread_exit_state *tes = list_entry(e, struct thread_exit_state, child_list_elem);
-    free(tes);
-  }
 }
 /** Completes a thread switch by activating the new thread's page
    tables, and, if the previous thread is dying, destroying it.

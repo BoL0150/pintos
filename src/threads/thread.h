@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include "fixed-point.h"
 #include "filesys/file.h"
+#include "synch.h"
 /** States in a thread's life cycle. */
 enum thread_status
   {

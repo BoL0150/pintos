@@ -33,7 +33,7 @@ struct thread * find_max_pri_thread_blocked_by (struct thread * cur_thread);
 struct thread * find_max_pri_thread_among_locks (struct list * lock_list);
 struct semaphore * find_and_rm_max_pri_sema (struct list * l);
 void pri_inverse_sema_down (struct lock *lock);
-void pri_inverse_sema_up (struct lock *lock);
+bool pri_inverse_sema_up (struct lock *lock);
 
 void sema_init (struct semaphore *, unsigned value);
 void sema_down (struct semaphore *);

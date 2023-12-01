@@ -3,15 +3,16 @@
 
 #include "filesys/off_t.h"
 #define FDNUM 32                        /**< 一个进程中的文件描述符个数*/
+#define OFILENUM 100
 struct inode;
 
-uint32_t fdalloc(struct file *f);
 /** Opening and closing files. */
 struct file *file_open (struct inode *);
 struct file *file_reopen (struct file *);
 void file_close (struct file *);
 struct inode *file_get_inode (struct file *);
 
+uint32_t fdalloc(struct file *);
 /** Reading and writing. */
 off_t file_read (struct file *, void *, off_t);
 off_t file_read_at (struct file *, void *, off_t size, off_t start);

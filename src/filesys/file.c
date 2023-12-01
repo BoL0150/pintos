@@ -11,16 +11,6 @@ struct file
     bool deny_write;            /**< Has file_deny_write() been called? */
   };
 
-uint32_t fdalloc(struct file *f) {
-  struct thread * t = thread_current();
-  // fd0和fd1保留给控制台的标准输入输出
-  for (int fd = 2; fd < FDNUM; fd++) {
-    if (t->ofile[fd] != NULL) continue;
-    t->ofile[fd] = f;
-    return fd;
-  }
-  return -1;
-}
 /** Opens a file for the given INODE, of which it takes ownership,
    and returns the new file.  Returns a null pointer if an
    allocation fails or if INODE is null. */
@@ -57,6 +47,7 @@ file_close (struct file *file)
 {
   if (file != NULL)
     {
+      // 关闭文件时要重新允许每个文件写入
       file_allow_write (file);
       inode_close (file->inode);
       free (file); 
@@ -175,4 +166,16 @@ file_tell (struct file *file)
 {
   ASSERT (file != NULL);
   return file->pos;
+}
+
+uint32_t fdalloc(struct file *f) {
+  ASSERT(f != NULL);
+  struct thread * t = thread_current();
+  // fd0和fd1保留给控制台的标准输入输出
+  for (int fd = 2; fd < FDNUM; fd++) {
+    if (t->ofile[fd] != NULL) continue;
+    t->ofile[fd] = f;
+    return fd;
+  }
+  return -1;
 }

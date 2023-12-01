@@ -290,7 +290,9 @@ run_task (char **argv)
   
   printf ("Executing '%s':\n", task);
 #ifdef USERPROG
-  process_wait (process_execute (task));
+  tid_t tid = process_execute (task);
+  // printf("%d\n", tid);
+  process_wait (tid);
 #else
   run_test (task);
 #endif
