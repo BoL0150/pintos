@@ -4,6 +4,7 @@
 /** System call numbers. */
 enum 
   {
+    EXIT_FROM_USER,
     /* Projects 2 and later. */
     SYS_HALT,                   /**< Halt the operating system. */
     SYS_EXIT,                   /**< Terminate this process. */

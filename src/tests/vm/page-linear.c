@@ -38,7 +38,15 @@ test_main (void)
 
   /* Check that it's all 0x5a. */
   msg ("read pass");
-  for (i = 0; i < SIZE; i++)
+
+  for (i = 0; i < SIZE; i++) {
     if (buf[i] != 0x5a)
       fail ("byte %zu != 0x5a", i);
+    // else {
+    //   msg("success\n");
+    // }
+  }
+  // for (i = 0; i < SIZE; i++) {
+  //   if (buf[i] != 0) msg("byte_no:%zu,content:%d", i, buf[i]);
+    
 }

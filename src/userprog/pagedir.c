@@ -1,3 +1,4 @@
+#include "devices/block.h"
 #include "userprog/pagedir.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -39,9 +40,13 @@ pagedir_destroy (uint32_t *pd)
         uint32_t *pt = pde_get_pt (*pde);
         uint32_t *pte;
         
-        for (pte = pt; pte < pt + PGSIZE / sizeof *pte; pte++)
+        for (pte = pt; pte < pt + PGSIZE / sizeof *pte; pte++) {
           if (*pte & PTE_P) 
             palloc_free_page (pte_get_page (*pte));
+          else if (*pte & PTE_SWAP) {
+            free_swap_slot(*pte >> PGBITS, PGSIZE / BLOCK_SECTOR_SIZE);            
+          }
+        }
         palloc_free_page (pt);
       }
   palloc_free_page (pd);
@@ -84,7 +89,38 @@ lookup_page (uint32_t *pd, const void *vaddr, bool create)
   pt = pde_get_pt (*pde);
   return &pt[pt_no (vaddr)];
 }
-
+// 此函数用来判断pte指向的数据在文件系统中还是交换分区中，所以所查找的
+// page table不一定存在，并且PTE的present位一定为0
+bool is_data_on_swap_partition(uint32_t *pd, const void *vaddr) {
+  uint32_t *pte = lookup_page(pd, vaddr, true);
+  ASSERT((*pte & PTE_P) == 0);
+  if ((*pte & PTE_SWAP) != 0) return true;
+  return false;
+}
+void clear_pte_swap_flag(uint32_t *pd, const void *vaddr) {
+  uint32_t *pte = lookup_page(pd, vaddr, false);
+  ASSERT(pte != NULL);
+  // fetch数据的时候还没有给PTE建立映射，present还是0
+  ASSERT((*pte & PTE_P) == 0);
+  ASSERT((*pte & PTE_SWAP) != 0);
+  // 旧的PTE的权限位除了swap之外其他都不变
+  *pte = *pte & ~PTE_SWAP;
+}
+void set_pte_to_swap_slot(uint32_t *pd, const void *vaddr, size_t swap_slot) {
+  uint32_t *pte = lookup_page(pd, vaddr, false);
+  ASSERT(pte != NULL);
+  ASSERT((*pte & PTE_P) != 0);
+  ASSERT((*pte & PTE_SWAP) == 0);
+  // 旧的PTE的权限位除了present之外其他都不变
+  uint32_t old_pte_privlege = (*pte & PGMASK) & ~PTE_P;
+  *pte = swap_slot << PGBITS | old_pte_privlege | PTE_SWAP;
+}
+size_t get_pte_swap_slot(uint32_t *pd, const void *vaddr) {
+  uint32_t *pte = lookup_page(pd, vaddr, false);
+  ASSERT(pte != NULL);
+  ASSERT((*pte & PTE_SWAP) != 0);
+  return *pte >> PGBITS;
+}
 /** Adds a mapping in page directory PD from user virtual page
    UPAGE to the physical frame identified by kernel virtual
    address KPAGE.
@@ -184,7 +220,11 @@ pagedir_set_dirty (uint32_t *pd, const void *vpage, bool dirty)
         }
     }
 }
-
+bool 
+pagedir_is_writable(uint32_t *pd, const void *vpage) {
+  uint32_t *pte = lookup_page(pd, vpage, false);
+  return pte != NULL && (*pte & PTE_W) != 0;
+}
 /** Returns true if the PTE for virtual page VPAGE in PD has been
    accessed recently, that is, between the time the PTE was
    installed and the last time it was cleared.  Returns false if
@@ -196,6 +236,12 @@ pagedir_is_accessed (uint32_t *pd, const void *vpage)
   return pte != NULL && (*pte & PTE_A) != 0;
 }
 
+bool
+pagedir_is_present (uint32_t *pd, const void *vpage) 
+{
+  uint32_t *pte = lookup_page (pd, vpage, false);
+  return pte != NULL && (*pte & PTE_P) != 0;
+}
 /** Sets the accessed bit to ACCESSED in the PTE for virtual page
    VPAGE in PD. */
 void

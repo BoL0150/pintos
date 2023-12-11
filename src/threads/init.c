@@ -1,3 +1,4 @@
+#include "devices/block.h"
 #include "fixed-point.h"
 #include "threads/init.h"
 #include <console.h>
@@ -127,14 +128,44 @@ pintos_init (void)
   locate_block_devices ();
   filesys_init (format_filesys);
 #endif
-
-  printf ("Boot complete.\n");
+  swap_table_init();
+  printf ("**********FUCK YOU!!! Boot complete.******************\n");
   
   if (*argv != NULL) {
     /* Run actions specified on kernel command line. */
     run_actions (argv);
   } else {
-    // TODO: no command line passed to kernel. Run interactively 
+        // TODO: no command line passed to kernel. Run interactively 
+    while(1){
+      puts("PKUOS>");
+
+
+      bool is_exit = false;
+      char *buffer = (char*)malloc(10 * sizeof(char));
+      for(int i = 0;;i++){
+        char c = input_getc();
+        putchar(c);
+        if(c != '\n' && c != '\r'){
+          // 处理backspace
+          if(c != 127)buffer[i] = c;
+          else i--;
+          continue;
+        } 
+        // 注意！一定要记得在字符数组结束后添加终止符0
+        buffer[i] = 0;
+        // strcmp相等返回0
+        if(strcmp(buffer,"whoami") == 0){
+          printf("fuckyou ,i dont have student id\n");
+          break;
+        }
+        if(strcmp(buffer,"exit") == 0){
+          is_exit = true;
+          break;
+        }
+        printf("invalid commmand\n");
+      }
+      if(is_exit)break;
+    } 
   }
 
   /* Finish up. */

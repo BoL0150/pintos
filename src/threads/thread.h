@@ -102,7 +102,8 @@ struct thread
     struct list_elem elem;              /**< List element for ready_list and blocked list in semaphores 
                                              线程要么就在ready_list中，要么就在semaphores的waiterlist中*/
     struct list_elem pri_list_elem;     /**< List element for priority queue list*/
-    struct file *ofile[FDNUM];          /**< 进程打开文件表*/
+    struct file *ofile[32];          /**< 进程打开文件表*/
+    struct mm_struct *mm;
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /**< Page directory. */
@@ -124,7 +125,25 @@ struct thread_exit_state{
    struct semaphore sema;
    struct list_elem child_list_elem;
 };
-
+struct mm_struct {
+   struct list vm_area_list;
+   struct lock lock;
+};
+struct vm_area_struct {
+   struct list_elem vm_area_list_elem;
+   char name[16];             
+   uint32_t vm_start;
+   uint32_t vm_end;
+   bool writable;
+   // struct inode * inode;
+   uint32_t read_bytes;
+   uint32_t zero_bytes; 
+   off_t file_pos;
+   struct lock lock;
+   // 用于栈动态增长
+   bool is_stack;
+   uint32_t stack_space_top; // 当前实际的栈空间的顶部
+};
 struct thread * find_max_pri_thread_from_pri_queue (void);
 void increase_recent_cpu(void);
 void update_recent_cpu(void);

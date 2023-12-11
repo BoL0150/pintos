@@ -54,6 +54,12 @@
         "interrupt.h": "c",
         "malloc.h": "c",
         "typeinfo": "c",
-        "executor": "c"
+        "executor": "c",
+        "palloc.h": "c",
+        "iostream": "c",
+        "ostream": "c",
+        "system_error": "c",
+        "block.h": "c",
+        "stdlib.h": "c"
     }
 }

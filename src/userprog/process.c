@@ -1,3 +1,5 @@
+#include "lib/string.h"
+#include "filesys/inode.h"
 #include "userprog/process.h"
 #include <debug.h>
 #include <inttypes.h>
@@ -21,8 +23,13 @@
 #include "string.h"
 #include "devices/timer.h"
 #include "threads/synch.h"
+#include "threads/pte.h"
+
+extern struct lock filesys_lock;
+
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static void create_vm_area_struct(uint32_t upage, uint32_t zero_bytes, uint32_t read_bytes, struct file *file, off_t ofs, bool writable, bool is_stack);
 
 static uint32_t pass_argument(const char **argv) {
   uint32_t sp = PHYS_BASE;
@@ -115,6 +122,7 @@ start_process (void *args)
   if_.eflags = FLAG_IF | FLAG_MBS;
 
   success = load (file_name, &if_.eip, &if_.esp);
+  // printf("%s;success?%d\n",file_name, success);
   *load_success = success;
 
   // 加载完成，唤醒父进程
@@ -167,6 +175,7 @@ process_wait (tid_t child_tid UNUSED)
 }
 // 用户进程导致的exit
 void exit_from_user_process(int exit_state) {
+  if (lock_held_by_current_thread(&filesys_lock)) lock_release(&filesys_lock);
   thread_current()->exit_state = exit_state;
   printf("%s: exit(%d)\n",thread_current()->name, exit_state);
   thread_exit();
@@ -231,34 +240,39 @@ typedef uint16_t Elf32_Half;
 struct Elf32_Ehdr
   {
     unsigned char e_ident[16];
-    Elf32_Half    e_type;
-    Elf32_Half    e_machine;
-    Elf32_Word    e_version;
-    Elf32_Addr    e_entry;
-    Elf32_Off     e_phoff;
-    Elf32_Off     e_shoff;
+    Elf32_Half    e_type;    // 文件类型
+    Elf32_Half    e_machine; // 机器名称
+    Elf32_Word    e_version; 
+    Elf32_Addr    e_entry;   // 文件装入内存中的起始地址
+    Elf32_Off     e_phoff;   // program header offset 程序头表在文件中的偏移地址
+    Elf32_Off     e_shoff;   // section header offset 节头表在文件中的偏移地址
     Elf32_Word    e_flags;
-    Elf32_Half    e_ehsize;
-    Elf32_Half    e_phentsize;
-    Elf32_Half    e_phnum;
-    Elf32_Half    e_shentsize;
-    Elf32_Half    e_shnum;
-    Elf32_Half    e_shstrndx;
+    Elf32_Half    e_ehsize;  // elf header size 当前的elf头的大小
+    Elf32_Half    e_phentsize; // program header entry size 程序头表的每个表项的大小
+    Elf32_Half    e_phnum;    // program header number 程序头表一共有多少个表项
+    Elf32_Half    e_shentsize;// section header entry size 节头表的每个表项的大小
+    Elf32_Half    e_shnum;    // section header number 节头表一共有多少个表项
+    Elf32_Half    e_shstrndx;  // section header string table index .strtab在节头表中的索引
   };
+// load的时候，先根据elf头找到程序头表，
+// 程序头表的每个表项代表可执行文件中的一个节，一个表项描述了可执行文件中的节和虚拟空间中的段的映射关系
+// load根据程序头表将可执行文件加载到内存中
 
+// 程序头表的表项
 /** Program header.  See [ELF1] 2-2 to 2-4.
    There are e_phnum of these, starting at file offset e_phoff
    (see [ELF1] 1-6). */
 struct Elf32_Phdr
   {
-    Elf32_Word p_type;
-    Elf32_Off  p_offset;
-    Elf32_Addr p_vaddr;
-    Elf32_Addr p_paddr;
-    Elf32_Word p_filesz;
-    Elf32_Word p_memsz;
-    Elf32_Word p_flags;
-    Elf32_Word p_align;
+    Elf32_Word p_type;  // type表示当前节是否可以加载到内存，通常可执行文件中只有两个段可以加载，分别是text和data段
+    Elf32_Off  p_offset;  // 当前节在文件中的偏移量
+    Elf32_Addr p_vaddr;  // 当前节加载到内存中的虚拟地址
+    Elf32_Addr p_paddr;  // 
+    Elf32_Word p_filesz; // 当前节在文件中的大小
+    Elf32_Word p_memsz;  // 当前节加载到内存后，在内存中的大小
+    Elf32_Word p_flags; // 该节加载到内存中的标志位
+    Elf32_Word p_align; // 按照多少字节对齐
+    // 按照memsz分配内存，按照filesz向文件中读取数据，装载入内存，它们之间的空隙用0填充
   };
 
 /** Values for p_type.  See [ELF1] 2-3. */
@@ -309,7 +323,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
-
+  // load的时候，先读取elf头，根据elf头找到程序头表，
+  // 程序头表的每个表项代表可执行文件中的一个节，一个表项描述了可执行文件中的节和虚拟空间中的段的映射关系
+  // load根据程序头表将可执行文件加载到内存中
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -326,6 +342,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
   /* Read program headers. */
   file_ofs = ehdr.e_phoff;
+  // 遍历程序头表
   for (i = 0; i < ehdr.e_phnum; i++) 
     {
       struct Elf32_Phdr phdr;
@@ -350,6 +367,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
         case PT_INTERP:
         case PT_SHLIB:
           goto done;
+        // 只有load类型的节才能加载入内存
         case PT_LOAD:
           if (validate_segment (&phdr, file)) 
             {
@@ -373,6 +391,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
                   read_bytes = 0;
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
                 }
+              // 将可执行文件中的对应部分加载入内存
               if (!load_segment (file, file_page, (void *) mem_page,
                                  read_bytes, zero_bytes, writable))
                 goto done;
@@ -400,7 +419,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
 /** load() helpers. */
 
-static bool install_page (void *upage, void *kpage, bool writable);
+bool install_page (void *upage, void *kpage, bool writable);
 
 /** Checks whether PHDR describes a valid, loadable segment in
    FILE and returns true if so, false otherwise. */
@@ -446,7 +465,78 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
   /* It's okay. */
   return true;
 }
+struct vm_area_struct*
+find_vm_area_struct(uint32_t upage, struct list* vm_area_list) {
+  ASSERT(lock_held_by_current_thread(&thread_current()->mm->lock));
+  struct list_elem *e = list_begin(vm_area_list);
+  for (; e != list_end(vm_area_list); e = list_next(e)) {
+    struct vm_area_struct *vas = list_entry(e, struct vm_area_struct, vm_area_list_elem);
+    // 发生page fault的位置要小于end，不能等于
+    if (vas->vm_start <= upage && upage < vas->vm_end) {
+      return vas;
+    }
+  }
+  return NULL;
+}
+static struct list_elem*
+find_first_greater_than(uint32_t upage, uint32_t memsize, struct list* vm_area_list) {
+  ASSERT(lock_held_by_current_thread(&thread_current()->mm->lock));
+  struct list_elem *e = list_begin(vm_area_list);
+  for (; e != list_end(vm_area_list); e = list_next(e)) {
+    struct vm_area_struct *vas = list_entry(e, struct vm_area_struct, vm_area_list_elem);
+    // 新的映射不能与之前的映射重叠
+    // printf("**********upage :%d vm_start: %d vm_end :%d*************\n", upage, vas->vm_start, vas->vm_end);
+    ASSERT(!(vas->vm_start < upage && upage < vas->vm_end));
+    if (vas->vm_start <= upage) {
+      continue;
+    }
+    // 映射的尾部也要小于下一段的start
+    ASSERT(upage + memsize <= vas->vm_start);
+    break;
+  }
+  return e;
+}
+static void
+create_vm_area_struct(uint32_t upage, uint32_t zero_bytes, uint32_t read_bytes, struct file *file, off_t ofs, bool writable, bool is_stack) {
+  ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
+  ASSERT (pg_ofs ((void*)upage) == 0);
+  ASSERT (ofs % PGSIZE == 0);
 
+  lock_acquire(&thread_current()->mm->lock);
+  struct list *vm_area_list = &thread_current()->mm->vm_area_list;
+  struct list_elem * e = find_first_greater_than(upage, zero_bytes + read_bytes, vm_area_list);
+  struct vm_area_struct *cur_vas = (struct vm_area_struct*)malloc(sizeof(struct vm_area_struct));
+  // 如果是stack，把栈vm_area的起点设为上一个vm_area的终点
+  if (is_stack) {
+    ASSERT(!list_empty(&thread_current()->mm->vm_area_list));
+    ASSERT(e == list_end(&thread_current()->mm->vm_area_list));
+    struct list_elem *prev_elem = list_prev(e);
+    struct vm_area_struct *prev_vas = list_entry(prev_elem, struct vm_area_struct, vm_area_list_elem);
+    upage = prev_vas->vm_end + PGSIZE;
+    // printf("%p\n",(void*)upage);
+    // printf("%p\n",PHYS_BASE);
+    zero_bytes = PHYS_BASE - upage;
+    cur_vas->stack_space_top = (uint32_t)PHYS_BASE;
+    ASSERT(zero_bytes % PGSIZE == 0);
+  }
+
+  // printf("upage:%p;zero_bytes:%d;read_bytes:%d;file name:%s;offset:%d;writable:%d;is_stack:%d\n",(void*)upage, zero_bytes, read_bytes, file == NULL ? NULL : file->name, ofs, writable, is_stack);
+
+  list_insert(e, &cur_vas->vm_area_list_elem);
+  cur_vas->vm_start = upage;
+  cur_vas->vm_end = upage + zero_bytes + read_bytes;
+  cur_vas->writable = writable;
+  if (file!= NULL) strlcpy(cur_vas->name, file->name, strlen(file->name) + 1);
+  else cur_vas->name[0] = 0;
+  // cur_vas->inode = (file == NULL ? NULL : file->inode);
+  cur_vas->read_bytes = read_bytes;
+  cur_vas->zero_bytes = zero_bytes;
+  cur_vas->file_pos = ofs;
+  cur_vas->is_stack = is_stack; // 如果该vm_area是栈区的话，允许动态增长
+  lock_init(&cur_vas->lock);
+  // printf("upage:%p;zero_bytes:%d;read_bytes:%d;file name:%s;offset:%d;writable:%d;cur_vas->vm_start:%p;cur_vas->vm_end:%p\n",(void*)upage, cur_vas->zero_bytes, cur_vas->read_bytes, cur_vas->name, cur_vas->file_pos, cur_vas->writable, cur_vas->vm_start, cur_vas->vm_end);
+  lock_release(&thread_current()->mm->lock);
+}
 /** Loads a segment starting at offset OFS in FILE at address
    UPAGE.  In total, READ_BYTES + ZERO_BYTES bytes of virtual
    memory are initialized, as follows:
@@ -469,9 +559,16 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
+  // 按需分页不需要在这里申请frame，只需要记录虚拟地址对应的数据页在磁盘上的位置即可
+  // 随后根据不同的情况，在page_fault时做处理：
+  // 如果page_read_bytes等于pagesize，在page_fault的时候从文件指定的位置读取到内存即可
+  // 如果page_zero_bytes等于pagesize，在page_fault时不需要从磁盘读取数据，只需要申请一个frame将其填充全0即可
+  // 如果二者都不等于pagesize，那么page_fault时先读一部分数据，然后剩下的部分填0
+  #ifndef VM
   file_seek (file, ofs);
   while (read_bytes > 0 || zero_bytes > 0) 
     {
+      // 一次只能读取一个page的数据，所以将page_read和page_zero切割
       /* Calculate how to fill this page.
          We will read PAGE_READ_BYTES bytes from FILE
          and zero the final PAGE_ZERO_BYTES bytes. */
@@ -492,17 +589,21 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
       /* Add the page to the process's address space. */
+      // 把页表upage处映射到kpage对应的物理地址处
       if (!install_page (upage, kpage, writable)) 
         {
           palloc_free_page (kpage);
           return false; 
         }
-
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
     }
+  #else
+  
+  create_vm_area_struct((uint32_t)upage, zero_bytes, read_bytes, file, ofs, writable, false);
+  #endif
   return true;
 }
 
@@ -511,18 +612,27 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (void **esp) 
 {
-  uint8_t *kpage;
   bool success = false;
+  void *upage = ((void*) PHYS_BASE) - PGSIZE;
 
+  #ifndef VM
+  uint8_t *kpage;
   kpage = palloc_get_page (PAL_USER | PAL_ZERO);
   if (kpage != NULL) 
     {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+      success = install_page (upage, kpage, true);
       if (success)
         *esp = PHYS_BASE;
       else
         palloc_free_page (kpage);
     }
+  #else
+  // upage = (void*)((uint32_t)PHYS_BASE - 10 * PGSIZE);
+  create_vm_area_struct((uint32_t)upage, PGSIZE, 0, NULL, 0, true, true);
+  *esp = PHYS_BASE; 
+  success = true;
+  #endif
+
   return success;
 }
 
@@ -535,13 +645,17 @@ setup_stack (void **esp)
    with palloc_get_page().
    Returns true on success, false if UPAGE is already mapped or
    if memory allocation fails. */
-static bool
+bool
 install_page (void *upage, void *kpage, bool writable)
 {
   struct thread *t = thread_current ();
-
   /* Verify that there's not already a page at that virtual
      address, then map our page there. */
-  return (pagedir_get_page (t->pagedir, upage) == NULL
-          && pagedir_set_page (t->pagedir, upage, kpage, writable));
+  // 如果upage已经映射了，或者设置upage失败了，则返回false
+  if (pagedir_get_page (t->pagedir, upage) != NULL
+          || !pagedir_set_page (t->pagedir, upage, kpage, writable))
+      return false;
+  // 映射成功后更新相应的frame的字段
+  map_frame_to(upage, kpage);
+  return true;
 }

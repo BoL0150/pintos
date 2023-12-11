@@ -1,15 +1,25 @@
+#include "userprog/syscall.h"
+#include "userprog/pagedir.h"
+#include "filesys/filesys.h"
+#include "threads/palloc.h"
+#include "lib/string.h"
+#include "userprog/process.h"
+#include "filesys/inode.h"
+#include "round.h"
 #include "userprog/exception.h"
+#include "threads/vaddr.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include "userprog/gdt.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "userprog/process.h"
 /** Number of page faults processed. */
 static long long page_fault_cnt;
 
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
-
+extern struct lock filesys_lock;
 /** Registers handlers for interrupts that can be caused by user
    programs.
 
@@ -109,7 +119,83 @@ kill (struct intr_frame *f)
       thread_exit ();
     }
 }
+// 鉴定为傻逼做法，要是复制结构体的时候数据被修改了怎么办？
+// static struct vm_area_struct * vas_copy(struct vm_area_struct *vas) {
+//    ASSERT(vas != NULL);
+//    struct vm_area_struct *new_vas = (struct vm_area_struct *)malloc(sizeof(struct vm_area_struct));
+//    memcpy((void*)new_vas, (void*)vas, sizeof(struct vm_area_struct));
+//    return new_vas;
+// }
 
+// static void
+// lru_replacer() {
+// 
+// }
+static void
+demand_paging(struct intr_frame* f, void *fault_addr) {
+   lock_acquire(&thread_current()->mm->lock);
+   // printf("************exception**************\n");
+   // printf("%p\n", fault_addr);
+   struct vm_area_struct *vas = find_vm_area_struct((uint32_t)fault_addr, &thread_current()->mm->vm_area_list);
+   // 按需分页是由用户触发的异常，如果用户传入的地址不存在，那么就exit(-1)
+   if (vas == NULL) {
+      lock_release(&thread_current()->mm->lock);
+      exit_from_user_process(-1);
+   }
+   lock_acquire(&vas->lock);
+   lock_release(&thread_current()->mm->lock);
+   // printf("zero_bytes:%d;read_bytes:%d;file name:%s;offset:%d;writable:%d;vas->vm_start:%p;vas->vm_end:%p\n",vas->zero_bytes, vas->read_bytes, vas->name, vas->file_pos, vas->writable, vas->vm_start, vas->vm_end);
+   // 栈的增长范围只允许在esp下面一个page内
+   if (vas->is_stack) {
+      if (if_ != NULL) {
+         // 由于是在内核中出现的pagefault，所以intr_frame被替换，处理pagefault时使用的esp应该是用户的esp
+         f->esp = if_->esp;
+      }
+      // esp要低于PHYS_BASE
+      uint32_t esp = f->esp > PHYS_BASE ? PHYS_BASE : f->esp;
+      // esp要在vm_area区间内，不能随便修改
+      if ((esp > vas->vm_end || esp < vas->vm_start) || (uint32_t)fault_addr + PGSIZE <= esp) {
+         lock_release(&vas->lock);
+         exit_from_user_process(-1); 
+      } 
+   }
+   uint32_t upage = ROUND_DOWN((uint32_t)fault_addr, PGSIZE);
+
+
+   uint32_t read_offset = upage - vas->vm_start;
+   ASSERT(vas->vm_start <= upage && upage + PGSIZE <= vas->vm_end);
+   uint32_t read_end = vas->vm_start + vas->read_bytes;
+   if (read_end < upage) read_end = upage;
+   size_t page_read_bytes = ((read_end - upage) < PGSIZE ? (read_end - upage) : PGSIZE);
+   size_t page_zero_bytes = PGSIZE - page_read_bytes;
+   void* kpage = palloc_get_page(PAL_USER);
+   // if (kpage == NULL) lru_replacer();
+   // 此时还没有处理frame分配完的情况
+   ASSERT(kpage != NULL);
+   if (vas->name[0] != 0) {
+      struct file *file = filesys_open(vas->name);
+      if (file == NULL) printf("%s\n",vas->name);
+      ASSERT(file != NULL);
+      file_seek(file, vas->file_pos + read_offset);
+      if (file_read(file, kpage, page_read_bytes) != page_read_bytes) {
+         palloc_free_page(kpage);
+         lock_release(&vas->lock);
+         kill(f);
+      }
+      file_close(file);
+   }
+   memset (kpage + page_read_bytes, 0, page_zero_bytes);
+   if (!install_page((void*)upage, kpage, vas->writable)) {
+      palloc_free_page(kpage);
+      lock_release(&vas->lock);
+      kill(f);
+   }
+   if (vas->is_stack) {
+      vas->stack_space_top -= PGSIZE;
+   }
+   // printf("read page, vaddr %p, frame_no %d from file %s\n", upage, get_kpage_no(kpage), vas->name);
+   lock_release(&vas->lock);
+}
 /** Page fault handler.  This is a skeleton that must be filled in
    to implement virtual memory.  Some solutions to project 2 may
    also require modifying this code.
@@ -150,14 +236,40 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  /* To implement virtual memory, delete the rest of the function
-     body, and replace it with code that brings in the page to
-     which fault_addr refers. */
-  printf ("Page fault at %p: %s error %s page in %s context.\n",
-          fault_addr,
-          not_present ? "not present" : "rights violation",
-          write ? "writing" : "reading",
-          user ? "user" : "kernel");
+  // printf("exception esp:%p\n",f->esp);
+  // printf ("Page fault at %p: %s error %s page in %s context.\n",
+  //         fault_addr,
+  //         not_present ? "not present" : "rights violation",
+  //         write ? "writing" : "reading",
+  //         user ? "user" : "kernel");
+   if (not_present) {
+      ASSERT(!pagedir_is_present(thread_current()->pagedir, fault_addr));
+
+      if (is_data_on_swap_partition(thread_current()->pagedir, fault_addr)) {
+         // printf("**********read data from swap partition**********\n");
+         void *kpage = palloc_get_page(PAL_USER);
+         size_t swap_slot_idx = fetch_data_from_swap_parition(thread_current()->pagedir, fault_addr, kpage);
+         void *upage = (void*)ROUND_DOWN((uint32_t)fault_addr, PGSIZE);
+         install_page((void*)upage, kpage, pagedir_is_writable(thread_current()->pagedir, fault_addr));
+         // 从交换分区中重新fetch数据、install PTE后，不需要取消新的PTE的swap flag（因为新的pte的swap flag本来就是0），
+         // 但是需要将pte的脏位置为true(install时默认的脏位是false)
+         // clear_pte_swap_flag(thread_create()->pagedir, fault_addr);
+         pagedir_set_dirty(thread_current()->pagedir, fault_addr, true);
+         // printf("read page, vaddr %p, frame_no %d from swap slot %d\n", upage, get_kpage_no(kpage), swap_slot_idx);
+      }
+      else {
+         // printf("**********read data from file sys**********\n");
+         // printf("%p\n",fault_addr);
+         if (!lock_held_by_current_thread(&filesys_lock)) lock_acquire(&filesys_lock);
+         demand_paging(f, fault_addr);
+         if (lock_held_by_current_thread(&filesys_lock)) lock_release(&filesys_lock);
+      }
+      // demand_paging(f, fault_addr);
+      return; // 分配成功，从中断handler中返回
+   } else {
+      exit_from_user_process(-1);
+   }
+
   kill (f);
 }
 

@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 #include <inttypes.h>
-
+#include "lib/kernel/list.h"
 /** Size of a block device sector in bytes.
    All IDE disks use this sector size, as do most USB and SCSI
    disks.  It's not worth it to try to cater to other sector
@@ -19,8 +19,6 @@ typedef uint32_t block_sector_t;
 #define PRDSNu PRIu32
 
 /** Higher-level interface for file systems, etc. */
-
-struct block;
 
 /** Type of a block device. */
 enum block_type

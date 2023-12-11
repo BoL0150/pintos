@@ -83,6 +83,14 @@ void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
 
 static void
+mm_struct_init(struct thread *t) {
+  ASSERT(t != initial_thread);
+  // 不需要给init进程初始化mm_struct，因为init进程不会load用户程序
+  t->mm = (struct mm_struct*)malloc(sizeof(struct mm_struct));
+  lock_init(&t->mm->lock);
+  list_init(&t->mm->vm_area_list);
+}
+static void
 init_tes(struct thread_exit_state *tes, struct thread *t) {
   tes->tid = t->tid;
   sema_init(&tes->sema, 0);
@@ -94,6 +102,18 @@ free_open_file(struct thread* t) {
     file_close(t->ofile[fd]);
     t->ofile[fd] = NULL;
   }
+}
+static void
+free_mm_struct(struct thread* t) {
+  ASSERT(t != NULL);
+  ASSERT(t->mm != NULL);
+  struct list* vm_area_list = &t->mm->vm_area_list;
+  while(!list_empty(vm_area_list)) {
+    struct list_elem *e = list_pop_front(vm_area_list);
+    struct vm_area_struct *vas = list_entry(e, struct vm_area_struct, vm_area_list_elem);
+    free(vas);
+  }
+  free(t->mm);
 }
 static void
 free_child_list(struct thread* t) {
@@ -362,7 +382,7 @@ thread_create (const char *name, int priority,
   struct thread_exit_state *tes = (struct thread_exit_state*) malloc(sizeof(struct thread_exit_state));
   init_tes(tes, t);
   list_push_back(&thread_current()->child_list, &tes->child_list_elem);
-
+  mm_struct_init(t);
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame (t, sizeof *kf);
   kf->eip = NULL;
@@ -499,6 +519,8 @@ thread_exit (void)
   if (thread_current() != initial_thread) update_tes();
   free_child_list(thread_current());
   free_open_file(thread_current());
+  if (thread_current() != initial_thread) free_mm_struct(thread_current()); 
+
   thread_current ()->status = THREAD_DYING;
   schedule ();
   NOT_REACHED ();

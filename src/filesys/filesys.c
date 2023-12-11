@@ -1,3 +1,5 @@
+#include "userprog/syscall.h"
+#include "lib/string.h"
 #include "filesys/filesys.h"
 #include <debug.h>
 #include <stdio.h>
@@ -9,7 +11,8 @@
 
 /** Partition that contains the file system. */
 struct block *fs_device;
-
+extern struct lock filesys_lock;
+extern struct list ready_list;
 static void do_format (void);
 /** Initializes the file system module.
    If FORMAT is true, reformats the file system. */
@@ -44,6 +47,9 @@ filesys_done (void)
 bool
 filesys_create (const char *name, off_t initial_size) 
 {
+  if (list_size(&ready_list) != 0) {
+    ASSERT(lock_held_by_current_thread(&filesys_lock));
+  }
   block_sector_t inode_sector = 0;
   struct dir *dir = dir_open_root ();
   bool success = (dir != NULL
@@ -65,14 +71,19 @@ filesys_create (const char *name, off_t initial_size)
 struct file *
 filesys_open (const char *name)
 {
+  if (list_size(&ready_list) != 0) {
+    ASSERT(lock_held_by_current_thread(&filesys_lock));
+  }
   struct dir *dir = dir_open_root ();
   struct inode *inode = NULL;
 
   if (dir != NULL)
     dir_lookup (dir, name, &inode);
   dir_close (dir);
-
-  return file_open (inode);
+  struct file *f = file_open (inode);
+  if (f != NULL) strlcpy(f->name, name, strlen(name) + 1);
+  return f;
+  // return file_open (inode);
 }
 
 /** Deletes the file named NAME.
@@ -82,6 +93,9 @@ filesys_open (const char *name)
 bool
 filesys_remove (const char *name) 
 {
+  if (list_size(&ready_list) != 0) {
+    ASSERT(lock_held_by_current_thread(&filesys_lock));
+  }
   struct dir *dir = dir_open_root ();
   bool success = dir != NULL && dir_remove (dir, name);
   dir_close (dir); 

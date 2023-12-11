@@ -2,9 +2,20 @@
 #define FILESYS_FILE_H
 
 #include "filesys/off_t.h"
+#include <debug.h>
+#include "threads/thread.h"
 #define FDNUM 32                        /**< 一个进程中的文件描述符个数*/
 #define OFILENUM 100
 struct inode;
+
+/** An open file. */
+struct file 
+  {
+    char name[16];              /**< Name (for debugging purposes). */
+    struct inode *inode;        /**< File's inode. */
+    off_t pos;                  /**< Current position. */
+    bool deny_write;            /**< Has file_deny_write() been called? */
+  };
 
 /** Opening and closing files. */
 struct file *file_open (struct inode *);
