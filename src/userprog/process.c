@@ -516,7 +516,6 @@ create_vm_area_struct(uint32_t upage, uint32_t zero_bytes, uint32_t read_bytes, 
     // printf("%p\n",(void*)upage);
     // printf("%p\n",PHYS_BASE);
     zero_bytes = PHYS_BASE - upage;
-    cur_vas->stack_space_top = (uint32_t)PHYS_BASE;
     ASSERT(zero_bytes % PGSIZE == 0);
   }
 

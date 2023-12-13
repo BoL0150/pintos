@@ -35,8 +35,12 @@ static int32_t argint(int n) {
   }
   return *(int32_t*)addr;
 }
-static void *argaddr(int n, int str_len) {
+// 获取系统调用参数中的指针并且检查指针所指向的空间是否可以访问，如果不能访问需要在系统调用的入口触发pagefault
+// 只有需要访问指针指向的空间的系统调用才需要进行检查，如read write exec open等；对于mmap，不需要进行检查，所以
+// 获取了地址后直接返回即可
+static void *argaddr(int n, bool check, int str_len) {
   void *addr = (void*)argint(n);
+  if (!check) return addr;
   // 每一个地址都要检查
   for (size_t i = 0;; i++) {
     check_addr_validity(addr + i);  
@@ -66,7 +70,7 @@ static uint32_t sys_exit(void){
   NOT_REACHED ();
 } 
 static uint32_t sys_exec(void){
-  char *cmd_line = (char*)argaddr(1, -1);
+  char *cmd_line = (char*)argaddr(1, true, -1);
   // printf("%s\n",cmd_line);
   lock_acquire(&filesys_lock);
   int32_t res = process_execute(cmd_line);
@@ -79,7 +83,7 @@ static uint32_t sys_wait(void){
   return process_wait(pid);
 } 
 static uint32_t sys_create(void){
-  const char *file = argaddr(1, -1);
+  const char *file = argaddr(1, true, -1);
   uint32_t initial_size = argint(2);
   lock_acquire(&filesys_lock);
   // printf("fuck\n");
@@ -89,7 +93,7 @@ static uint32_t sys_create(void){
   return ret;
 } 
 static uint32_t sys_remove(void){
-  const char *file = argaddr(1, -1);
+  const char *file = argaddr(1, true, -1);
   lock_acquire(&filesys_lock);
   uint32_t ret = (uint32_t)filesys_remove(file);
   lock_release(&filesys_lock);
@@ -106,7 +110,7 @@ is_running_exefile(const char *name) {
 // 打开一个指定名字的文件并且分配文件描述符,0和1保留给控制台标准io
 // 与unix语义不同，pintos中的进程打开文件表不继承给子进程
 static uint32_t sys_open(void){
-  const char *file_name = argaddr(1, -1);
+  const char *file_name = argaddr(1, true, -1);
   lock_acquire(&filesys_lock);
   struct file * f= filesys_open(file_name);
   lock_release(&filesys_lock);
@@ -127,7 +131,7 @@ static uint32_t sys_filesize(void){
 static uint32_t sys_read(void){
   int fd = arg_fd(1);
   uint32_t size = argint(3);
-  void* buffer = argaddr(2, size);
+  void* buffer = argaddr(2, true, size);
   // 禁止用户往栈上写（管得真鸡巴宽）
   if (buffer < pg_round_down(if_->esp) && buffer > pg_round_down(if_->esp) - PGSIZE * 10) {
     exit_from_user_process(-1);
@@ -150,7 +154,7 @@ static uint32_t sys_write(void){
   // printf("WRITE *********\n");
   int fd = arg_fd(1);
   uint32_t size = argint(3);
-  void* buffer = argaddr(2, size);
+  void* buffer = argaddr(2, true, size);
   struct file *f = thread_current()->ofile[fd];
   uint32_t res;
   if (fd == 1) {
@@ -197,8 +201,16 @@ static uint32_t exit_from_user(void) {
   exit_from_user_process(-1);
   NOT_REACHED();
 }
-// static uint32_t sys_mmap(void){}
-// static uint32_t sys_munmap(void){}
+static uint32_t sys_mmap(void){
+  int fd = arg_fd(1);
+  // mmap不需要访问传入参数中的指针所指向的位置，所以获取参数中的地址时不需要检查
+  void *addr = argaddr(2, false, -1);
+  
+}
+
+static uint32_t sys_munmap(void){
+
+}
 // static uint32_t sys_chdir(void){}
 // static uint32_t sys_mkdir(void){}
 // static uint32_t sys_readdir(void){}
@@ -219,6 +231,8 @@ static uint32_t (*syscalls[])(void) = {
   [SYS_SEEK] sys_seek,
   [SYS_TELL] sys_tell,
   [SYS_CLOSE] sys_close,
+  [SYS_MMAP] sys_mmap,
+  [SYS_MUNMAP] sys_munmap
 };
 void
 syscall_init (void) 

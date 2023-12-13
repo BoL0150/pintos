@@ -135,14 +135,14 @@ struct vm_area_struct {
    uint32_t vm_start;
    uint32_t vm_end;
    bool writable;
-   // struct inode * inode;
    uint32_t read_bytes;
    uint32_t zero_bytes; 
    off_t file_pos;
    struct lock lock;
    // 用于栈动态增长
    bool is_stack;
-   uint32_t stack_space_top; // 当前实际的栈空间的顶部
+   bool is_mmap;
+   int fd;
 };
 struct thread * find_max_pri_thread_from_pri_queue (void);
 void increase_recent_cpu(void);

@@ -145,7 +145,7 @@ demand_paging(struct intr_frame* f, void *fault_addr) {
    lock_acquire(&vas->lock);
    lock_release(&thread_current()->mm->lock);
    // printf("zero_bytes:%d;read_bytes:%d;file name:%s;offset:%d;writable:%d;vas->vm_start:%p;vas->vm_end:%p\n",vas->zero_bytes, vas->read_bytes, vas->name, vas->file_pos, vas->writable, vas->vm_start, vas->vm_end);
-   // 栈的增长范围只允许在esp下面一个page内
+   // 栈的增长范围只允许在esp下面一个page内,新的栈要和旧的栈连续
    if (vas->is_stack) {
       if (if_ != NULL) {
          // 由于是在内核中出现的pagefault，所以intr_frame被替换，处理pagefault时使用的esp应该是用户的esp
@@ -169,8 +169,6 @@ demand_paging(struct intr_frame* f, void *fault_addr) {
    size_t page_read_bytes = ((read_end - upage) < PGSIZE ? (read_end - upage) : PGSIZE);
    size_t page_zero_bytes = PGSIZE - page_read_bytes;
    void* kpage = palloc_get_page(PAL_USER);
-   // if (kpage == NULL) lru_replacer();
-   // 此时还没有处理frame分配完的情况
    ASSERT(kpage != NULL);
    if (vas->name[0] != 0) {
       struct file *file = filesys_open(vas->name);
@@ -189,9 +187,6 @@ demand_paging(struct intr_frame* f, void *fault_addr) {
       palloc_free_page(kpage);
       lock_release(&vas->lock);
       kill(f);
-   }
-   if (vas->is_stack) {
-      vas->stack_space_top -= PGSIZE;
    }
    // printf("read page, vaddr %p, frame_no %d from file %s\n", upage, get_kpage_no(kpage), vas->name);
    lock_release(&vas->lock);
@@ -259,7 +254,6 @@ page_fault (struct intr_frame *f)
       }
       else {
          // printf("**********read data from file sys**********\n");
-         // printf("%p\n",fault_addr);
          if (!lock_held_by_current_thread(&filesys_lock)) lock_acquire(&filesys_lock);
          demand_paging(f, fault_addr);
          if (lock_held_by_current_thread(&filesys_lock)) lock_release(&filesys_lock);

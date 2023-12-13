@@ -221,9 +221,6 @@ get_data_page(struct frame *frame) {
     printf("%p,%p\n",get_frame(page), frame);
   }
   ASSERT(get_frame(page) == frame);
-  if (get_frame_no(frame) != get_kpage_no(page)) {
-    printf("frame_no:%d;kpage_no:%d\n", get_frame_no(frame), get_kpage_no(page));
-  }
   ASSERT(get_frame_no(frame) == get_kpage_no(page));
   return page;
 }
