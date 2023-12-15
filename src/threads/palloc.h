@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include "threads/synch.h"
 #include "threads/vaddr.h"
+#include "threads/thread.h"
+#include "filesys/file.h"
 /** How to allocate pages. */
 enum palloc_flags
   {
@@ -21,9 +23,10 @@ struct frame {
   // 被pin住时页面置换算法将该frame跳过，不允许驱除出去
   bool pinned;
   int ref;
-  // struct lock lock;
   uint32_t *pagedir;
   uint32_t vaddr;
+  struct thread* t;
+  struct lock lock;
 };
 // 一个frame对应user pool中的一个page
 struct frameTable {
@@ -46,4 +49,7 @@ void map_frame_to(void* upage, void* kpage);
 void unmap_frame(void* kpage);
 size_t fetch_data_from_swap_parition(uint32_t *pd, const void* vaddr, void * buffer);
 void swap_table_init(void);
+void pin_frame(uint32_t *pd, const void *vaddr);
+void unpin_frame(uint32_t *pd, const void *vaddr);
+void write_mmap_page_back(struct vm_area_struct *mmap_vas, void *upage, void *data_page);
 #endif /**< threads/palloc.h */

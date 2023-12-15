@@ -1,4 +1,5 @@
 #include "threads/thread.h"
+#include "userprog/process.h"
 #include <debug.h>
 #include <stddef.h>
 #include <random.h>
@@ -111,7 +112,8 @@ free_mm_struct(struct thread* t) {
   while(!list_empty(vm_area_list)) {
     struct list_elem *e = list_pop_front(vm_area_list);
     struct vm_area_struct *vas = list_entry(e, struct vm_area_struct, vm_area_list_elem);
-    free(vas);
+    if (vas->is_mmap) destory_mmap_vas(vas);
+    else free(vas);
   }
   free(t->mm);
 }
@@ -122,10 +124,6 @@ free_child_list(struct thread* t) {
     struct thread_exit_state *tes = list_entry(e, struct thread_exit_state, child_list_elem);
     free(tes);
   }
-  // for (e = list_begin(&t->child_list); e != list_end(&t->child_list); e = list_remove(e)) {
-  //   struct thread_exit_state *tes = list_entry(e, struct thread_exit_state, child_list_elem);
-  //   free(tes);
-  // }
 }
 
 void increase_recent_cpu(void) {
@@ -508,6 +506,7 @@ thread_exit (void)
   // printf("FUCK YOU THREAD EXIT!!!\n");
 
 #ifdef USERPROG
+  if (thread_current() != initial_thread) free_mm_struct(thread_current()); 
   process_exit ();
 #endif
 
@@ -519,7 +518,6 @@ thread_exit (void)
   if (thread_current() != initial_thread) update_tes();
   free_child_list(thread_current());
   free_open_file(thread_current());
-  if (thread_current() != initial_thread) free_mm_struct(thread_current()); 
 
   thread_current ()->status = THREAD_DYING;
   schedule ();

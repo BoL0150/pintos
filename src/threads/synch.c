@@ -32,6 +32,7 @@
 #include <string.h>
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+extern struct lock filesys_lock;
 struct semaphore *
 find_and_rm_max_pri_sema (struct list * cond_waiters) {
   ASSERT (cond_waiters != NULL);
@@ -324,7 +325,6 @@ lock_acquire (struct lock *lock)
   ASSERT (!intr_context ());
   // 保持lock->holder、lock->sema、lock->hodler->lock_list的更新的原子性
   enum intr_level old_level = intr_disable();
-
   ASSERT (!lock_held_by_current_thread (lock));
   // if (!thread_mlfqs) pri_inverse_sema_down(lock);
   // else sema_down(&lock->semaphore);

@@ -66,7 +66,7 @@ static char **read_command_line (void);
 static char **parse_options (char **argv);
 static void run_actions (char **argv);
 static void usage (void);
-
+extern struct lock filesys_lock;
 #ifdef FILESYS
 static void locate_block_devices (void);
 static void locate_block_device (enum block_type, const char *name);
@@ -128,7 +128,10 @@ pintos_init (void)
   locate_block_devices ();
   filesys_init (format_filesys);
 #endif
+
+#ifdef VM
   swap_table_init();
+#endif
   printf ("**********FUCK YOU!!! Boot complete.******************\n");
   
   if (*argv != NULL) {
@@ -136,36 +139,36 @@ pintos_init (void)
     run_actions (argv);
   } else {
         // TODO: no command line passed to kernel. Run interactively 
-    while(1){
-      puts("PKUOS>");
+    // while(1){
+    //   puts("PKUOS>");
 
 
-      bool is_exit = false;
-      char *buffer = (char*)malloc(10 * sizeof(char));
-      for(int i = 0;;i++){
-        char c = input_getc();
-        putchar(c);
-        if(c != '\n' && c != '\r'){
-          // 处理backspace
-          if(c != 127)buffer[i] = c;
-          else i--;
-          continue;
-        } 
-        // 注意！一定要记得在字符数组结束后添加终止符0
-        buffer[i] = 0;
-        // strcmp相等返回0
-        if(strcmp(buffer,"whoami") == 0){
-          printf("fuckyou ,i dont have student id\n");
-          break;
-        }
-        if(strcmp(buffer,"exit") == 0){
-          is_exit = true;
-          break;
-        }
-        printf("invalid commmand\n");
-      }
-      if(is_exit)break;
-    } 
+    //   bool is_exit = false;
+    //   char *buffer = (char*)malloc(10 * sizeof(char));
+    //   for(int i = 0;;i++){
+    //     char c = input_getc();
+    //     putchar(c);
+    //     if(c != '\n' && c != '\r'){
+    //       // 处理backspace
+    //       if(c != 127)buffer[i] = c;
+    //       else i--;
+    //       continue;
+    //     } 
+    //     // 注意！一定要记得在字符数组结束后添加终止符0
+    //     buffer[i] = 0;
+    //     // strcmp相等返回0
+    //     if(strcmp(buffer,"whoami") == 0){
+    //       printf("fuckyou ,i dont have student id\n");
+    //       break;
+    //     }
+    //     if(strcmp(buffer,"exit") == 0){
+    //       is_exit = true;
+    //       break;
+    //     }
+    //     printf("invalid commmand\n");
+    //   }
+    //   if(is_exit)break;
+    // } 
   }
 
   /* Finish up. */

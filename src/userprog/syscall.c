@@ -1,3 +1,4 @@
+#include "threads/palloc.h"
 #include "userprog/syscall.h"
 #include "user/syscall.h"
 #include <stdio.h>
@@ -16,7 +17,6 @@
 #include "kernel/console.h"
 #define ARRAY_LEN(X) (sizeof(X) / sizeof((X)[0]))
 struct lock filesys_lock;
-struct intr_frame *if_;
 extern struct list all_list;
 static void syscall_handler (struct intr_frame *);
 static void check_addr_validity(void *addr) {
@@ -28,7 +28,7 @@ static void check_addr_validity(void *addr) {
 // 以int为单位返回参数，n代表第几个参数，从0到3，第0个参数是系统调用号
 static int32_t argint(int n) {
   ASSERT (n >= 0 && n <= 3);
-  void *addr = if_->esp + n * sizeof(int);
+  void *addr = thread_current()->user_esp + n * sizeof(int);
   // 参数本身存储在用户空间中的地址也要检查
   for (size_t i = 0; i < sizeof(int32_t); i++) {
     check_addr_validity(addr + i);
@@ -48,8 +48,22 @@ static void *argaddr(int n, bool check, int str_len) {
     // 将它们的pagefault在系统调用的入口处触发，不能在执行到一半时触发，否则会造成死锁
     if (*(char*)(addr + i) == 0 && str_len == -1) break;
     if (str_len != -1 && i == str_len) break;
+    // 触发完pagefault之后还要将该page pin住，在整个系统调用的过程中不能被驱逐出去，否则还是会
+    // 出现在内核中pagefault的情况
+    if (i == 0) pin_frame(thread_current()->pagedir, addr);
+    if (pg_ofs(addr + i) == 0) pin_frame(thread_current()->pagedir, addr + i);
   }
   return addr;
+}
+static void
+unpin_user_frame(int n, int str_len) {
+  void *addr = (void*)argint(n);
+  for (size_t i = 0;; i++) {
+    if (str_len == -1 && *(char*)(addr + i) == 0) break;
+    if (str_len != -1 && i == str_len) break;
+    if (i == 0) unpin_frame(thread_current()->pagedir, addr);
+    if (pg_ofs(addr + i) == 0) unpin_frame(thread_current()->pagedir, addr + i);
+  }
 }
 static uint32_t get_sys_num(void) {
   return argint(0);
@@ -59,30 +73,31 @@ static uint32_t arg_fd(int n) {
   if (fd >= FDNUM) exit_from_user_process(-1);
   return fd;
 }
-static uint32_t sys_halt(void) {
+static int32_t sys_halt(void) {
   // printf("************FUCK YOU PINTOS***************\n");
   shutdown_power_off(); 
   return 0;
 }
-static uint32_t sys_exit(void){
+static int32_t sys_exit(void){
   int exit_state = argint(1);
   exit_from_user_process(exit_state);
   NOT_REACHED ();
 } 
-static uint32_t sys_exec(void){
+static int32_t sys_exec(void){
   char *cmd_line = (char*)argaddr(1, true, -1);
   // printf("%s\n",cmd_line);
   lock_acquire(&filesys_lock);
   int32_t res = process_execute(cmd_line);
   lock_release(&filesys_lock);
   // if (res == TID_ERROR) exit_from_user_process(-1);
+  unpin_user_frame(1, -1);
   return res;
 } 
-static uint32_t sys_wait(void){
+static int32_t sys_wait(void){
   pid_t pid = argint(1);
   return process_wait(pid);
 } 
-static uint32_t sys_create(void){
+static int32_t sys_create(void){
   const char *file = argaddr(1, true, -1);
   uint32_t initial_size = argint(2);
   lock_acquire(&filesys_lock);
@@ -90,13 +105,15 @@ static uint32_t sys_create(void){
   uint32_t ret = (uint32_t)filesys_create(file, initial_size);
   // printf("fuck you\n");
   lock_release(&filesys_lock);
+  unpin_user_frame(1, -1);
   return ret;
 } 
-static uint32_t sys_remove(void){
+static int32_t sys_remove(void){
   const char *file = argaddr(1, true, -1);
   lock_acquire(&filesys_lock);
   uint32_t ret = (uint32_t)filesys_remove(file);
   lock_release(&filesys_lock);
+  unpin_user_frame(1, -1);
   return ret;
 } 
 static bool 
@@ -109,17 +126,21 @@ is_running_exefile(const char *name) {
 }
 // 打开一个指定名字的文件并且分配文件描述符,0和1保留给控制台标准io
 // 与unix语义不同，pintos中的进程打开文件表不继承给子进程
-static uint32_t sys_open(void){
+static int32_t sys_open(void){
   const char *file_name = argaddr(1, true, -1);
   lock_acquire(&filesys_lock);
   struct file * f= filesys_open(file_name);
   lock_release(&filesys_lock);
-  if (f == NULL) return -1;
+  if (f == NULL) {
+    unpin_user_frame(1, -1);
+    return -1;
+  }
   // 阻止向正在运行的可执行文件写入
   if (is_running_exefile(file_name)) file_deny_write(f);
+  unpin_user_frame(1, -1);
   return fdalloc(f);
 } 
-static uint32_t sys_filesize(void){
+static int32_t sys_filesize(void){
   int fd = arg_fd(1);
   struct file * f = thread_current()->ofile[fd];
   lock_acquire(&filesys_lock);
@@ -128,12 +149,12 @@ static uint32_t sys_filesize(void){
   return res;
 }
 // 从指定的fd中读取size字节到buffer中，如果fd是0，从标准输入键盘中读取
-static uint32_t sys_read(void){
+static int32_t sys_read(void){
   int fd = arg_fd(1);
   uint32_t size = argint(3);
   void* buffer = argaddr(2, true, size);
   // 禁止用户往栈上写（管得真鸡巴宽）
-  if (buffer < pg_round_down(if_->esp) && buffer > pg_round_down(if_->esp) - PGSIZE * 10) {
+  if (buffer < pg_round_down(thread_current()->user_esp) && buffer > pg_round_down(thread_current()->user_esp) - PGSIZE * 10) {
     exit_from_user_process(-1);
   }
   struct file *f = thread_current()->ofile[fd];
@@ -146,17 +167,18 @@ static uint32_t sys_read(void){
     res = file_read(f, buffer, size);
     lock_release(&filesys_lock);
   }
+  unpin_user_frame(2, size);
   return res;
 }
 // 从buffer中向指定的fd写入size字节，如果fd是1，写到控制台上；写到了文件的末尾通常会扩展文件，但是此时（p2）还没有实现
 // 现在是尽可能地写直到末尾停止
-static uint32_t sys_write(void){
+static int32_t sys_write(void){
   // printf("WRITE *********\n");
   int fd = arg_fd(1);
   uint32_t size = argint(3);
   void* buffer = argaddr(2, true, size);
   struct file *f = thread_current()->ofile[fd];
-  uint32_t res;
+  int32_t res;
   if (fd == 1) {
     putbuf(buffer, size);
     res = size;
@@ -167,12 +189,13 @@ static uint32_t sys_write(void){
     res = file_write(f, buffer, size);
     lock_release(&filesys_lock);
   }
+  unpin_user_frame(2, size);
   return res;
 }
 // 改变指定fd对应的打开文件结构体中的读取指针，也就是下一次读写的起点
 // 如果seek超过了文件的末尾不是error，以后读取到0字节，写入会扩展文件（中间的gap用0填充）
 // 但是此时pintos文件系统的文件长度是固定的，所以写超过末尾会返回error
-static uint32_t sys_seek(void){
+static int32_t sys_seek(void){
   int fd = arg_fd(1);
   uint32_t position = argint(2);
   lock_acquire(&filesys_lock);
@@ -180,7 +203,7 @@ static uint32_t sys_seek(void){
   lock_release(&filesys_lock);
   return 0;
 }
-static uint32_t sys_tell(void){
+static int32_t sys_tell(void){
   int fd = arg_fd(1);
   lock_acquire(&filesys_lock);
   int res = file_tell(thread_current()->ofile[fd]);
@@ -189,7 +212,7 @@ static uint32_t sys_tell(void){
 }
 // 关闭指定的文件描述符（关不关file结构体？），
 // 进程exit或终止的时候要通过调用这个函数，关闭它所有的打开文件描述符
-static uint32_t sys_close(void){
+static int32_t sys_close(void){
   int fd = arg_fd(1);
   lock_acquire(&filesys_lock);
   file_close(thread_current()->ofile[fd]);
@@ -197,26 +220,33 @@ static uint32_t sys_close(void){
   thread_current()->ofile[fd] = NULL;
   return 0;
 }
-static uint32_t exit_from_user(void) {
+static int32_t exit_from_user(void) {
   exit_from_user_process(-1);
   NOT_REACHED();
 }
-static uint32_t sys_mmap(void){
+static int32_t sys_mmap(void){
   int fd = arg_fd(1);
   // mmap不需要访问传入参数中的指针所指向的位置，所以获取参数中的地址时不需要检查
   void *addr = argaddr(2, false, -1);
-  
+  int mapid = create_mmap_vm_area_struct(fd, addr);
+  return mapid;
 }
 
-static uint32_t sys_munmap(void){
-
+static int32_t sys_munmap(void) {
+  int mapping = argint(1);
+  lock_acquire(&thread_current()->mm->lock);
+  struct list_elem* e= find_mmap_vm_area_struct(mapping);
+  list_remove(e);
+  destory_mmap_vas(list_entry(e, struct vm_area_struct, vm_area_list_elem)); 
+  lock_release(&thread_current()->mm->lock);
+  return 0;
 }
 // static uint32_t sys_chdir(void){}
 // static uint32_t sys_mkdir(void){}
 // static uint32_t sys_readdir(void){}
 // static uint32_t sys_isdir(void){}
 // static uint32_t sys_inumber(void){}
-static uint32_t (*syscalls[])(void) = {
+static int32_t (*syscalls[])(void) = {
   [EXIT_FROM_USER] exit_from_user,
   [SYS_HALT] sys_halt,
   [SYS_EXIT] sys_exit,
@@ -246,10 +276,10 @@ syscall_handler (struct intr_frame *f UNUSED)
 {
   // printf("SYSCALL*********\n");
   ASSERT (f != NULL);
-  if_ = f;
+  thread_current()->user_esp = f->esp;
   // 如果随便移动esp，会导致系统调用号为0，调用exit
   uint32_t sys_num = get_sys_num();
   if (sys_num >= ARRAY_LEN(syscalls)) exit_from_user_process(-1);
-  if_->eax = syscalls[sys_num]();
-  if_ = NULL;
+  f->eax = syscalls[sys_num]();
+  thread_current()->user_esp = NULL;
 }

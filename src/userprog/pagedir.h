@@ -25,5 +25,6 @@ size_t get_pte_swap_slot(uint32_t *pd, const void *vaddr);
 bool pagedir_is_writable(uint32_t *pd, const void *vpage);
 bool pagedir_is_present (uint32_t *pd, const void *vpage);
 void clear_pte_swap_flag(uint32_t *pd, const void *vaddr);
+void pagedir_clear_pte_and_kpage (uint32_t *pd, void *upage);
 
 #endif /**< userprog/pagedir.h */

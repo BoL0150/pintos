@@ -1,3 +1,5 @@
+#include "filesys/filesys.h"
+#include "userprog/process.h"
 #include "threads/malloc.h"
 #include "userprog/pagedir.h"
 #include "devices/block.h"
@@ -39,11 +41,13 @@ struct pool
 static struct swapTable swap_table;
 /** Two pools: one for kernel data, one for user pages. */
 struct pool kernel_pool, user_pool;
+extern struct lock filesys_lock;
 static struct frameTable* frame_table;
 static size_t init_pool (struct pool *, void *base, size_t page_cnt,
                        const char *name);
 static bool page_from_pool (const struct pool *, void *page);
 static void * get_data_page(struct frame *frame);
+struct frame* frame_345;
 size_t get_frame_no(struct frame* f) {
   return ((uint32_t)f - (uint32_t)frame_table->frames) / sizeof(struct frame);
 }
@@ -76,22 +80,54 @@ clear_frame(struct frame* frame) {
   frame->ref = 0;
   frame->vaddr = 0;
   frame->pinned = false;
+  frame->t = NULL;
 }
+void
+write_mmap_page_back(struct vm_area_struct *mmap_vas, void *upage, void *data_page) {
+  ASSERT(lock_held_by_current_thread(&filesys_lock));
+  ASSERT(mmap_vas->is_mmap);
+  struct file *file = mmap_vas->file;
+  ASSERT(file != NULL);
+  uint32_t write_offset = (uint32_t)upage - mmap_vas->vm_start;
+  file_seek(file, mmap_vas->file_pos + write_offset);
+  file_write(file, data_page, PGSIZE);
+}
+
 static void 
 evict(struct frame *cur_frame) {
+  // printf("process %d evict %d kpage\n", thread_current()->tid, get_frame_no(cur_frame));
+  // if (get_frame_no(cur_frame) == 345) {
+  //   printf("345\n");
+  // }
+  // ASSERT(lock_held_by_current_thread(&frame_table->lock));
   ASSERT(lock_held_by_current_thread(&frame_table->lock));
   void *data_page = get_data_page(cur_frame);
   ASSERT(!cur_frame->pinned);
   uint32_t *pagedir = cur_frame->pagedir;
   void *vaddr = (void*)cur_frame->vaddr;
-  // 如果是脏页，淘汰时需要写回交换分区
+  ASSERT(pagedir != NULL);
+  ASSERT(vaddr != NULL);
+  ASSERT(pg_ofs(vaddr) == 0);
+  // 如果是脏页，淘汰时需要写回交换分区或者源文件（mmap）
   if (pagedir_is_dirty(pagedir, vaddr)) {
-    // 将数据写入交换分区
-    size_t swap_slot_idx = write_to_swap_parition(data_page);
-    set_pte_to_swap_slot(pagedir, vaddr, swap_slot_idx);
-    // printf("evict dirty page, vaddr %p, frame_no %d to swap slot %d\n", vaddr, get_frame_no(cur_frame), swap_slot_idx);
+    struct thread * evict_frame_thread = cur_frame->t;
+    ASSERT(cur_frame->t != NULL);
+    lock_acquire(&evict_frame_thread->mm->lock);
+    struct vm_area_struct *vas = find_vm_area_struct((uint32_t)vaddr, evict_frame_thread->mm);
+    lock_release(&evict_frame_thread->mm->lock);
+    ASSERT(vas != NULL);
+    if (vas->is_mmap) {
+      lock_acquire(&filesys_lock);
+      write_mmap_page_back(vas, vaddr, data_page);
+      lock_release(&filesys_lock);
+    } else {
+      // 将数据写入交换分区
+      size_t swap_slot_idx = write_to_swap_parition(data_page);
+      set_pte_to_swap_slot(pagedir, vaddr, swap_slot_idx);
+      // printf("evict dirty page, vaddr %p, frame_no %d to swap slot %d\n", vaddr, get_frame_no(cur_frame), swap_slot_idx);
+    }
   } else {
-    // 清除PTE中的present位
+    // 清除pte，page不需要清理，因为后面要用，frame在clear_frame中清零
     pagedir_clear_page(pagedir, vaddr);
     // printf("evict clean page, vaddr %p, frame_no %d\n", vaddr, get_frame_no(cur_frame));
   }
@@ -153,7 +189,6 @@ clock_replacement(int page_cnt) {
 void 
 free_swap_slot(size_t slot_start_idx, size_t sector_nums) {
   lock_acquire(&swap_table.lock);
-  if (free_swap_slot == 760) printf("free_swap_slot:%d\n",slot_start_idx);
   ASSERT(bitmap_all(swap_table.used_map, slot_start_idx, sector_nums));
   bitmap_set_multiple(swap_table.used_map, slot_start_idx, sector_nums, false);
   lock_release(&swap_table.lock);
@@ -175,6 +210,8 @@ frame_table_init(uint32_t user_pages) {
     cur->pagedir = NULL;
     cur->vaddr = 0;
     cur->pinned = false;
+    cur->t = NULL;
+    lock_init(&cur->lock);
   }
 }
 /** Initializes the page allocator.  At most USER_PAGE_LIMIT
@@ -224,6 +261,29 @@ get_data_page(struct frame *frame) {
   ASSERT(get_frame_no(frame) == get_kpage_no(page));
   return page;
 }
+void pin_frame(uint32_t *pd, const void *vaddr) {
+  // 经过了pagefault，对应的PTE一定存在
+  void *kpage = pagedir_get_page(pd, vaddr);
+  ASSERT(kpage != NULL);
+  struct frame *f = get_frame((void*)ROUND_DOWN((uint32_t)kpage, PGSIZE));
+  lock_acquire(&frame_table->lock);
+  f->pinned = true;
+  lock_release(&frame_table->lock);
+}
+void unpin_frame(uint32_t *pd, const void *vaddr) {
+  void *kpage = pagedir_get_page(pd, vaddr);
+  ASSERT(kpage != NULL);
+  struct frame *f = get_frame((void*)ROUND_DOWN((uint32_t)kpage, PGSIZE));
+  lock_acquire(&frame_table->lock);
+  ASSERT(f->pinned);
+  f->pinned = false;
+  lock_release(&frame_table->lock);
+}
+static bool
+is_exception_from_kernel(void) {
+   // 如果记录了user_esp,就说明异常来自于内核
+   return thread_current()->user_esp != NULL;
+}
 void map_frame_to(void* upage, void* kpage) {
   ASSERT(upage != NULL);
   ASSERT(kpage != NULL);
@@ -235,11 +295,13 @@ void map_frame_to(void* upage, void* kpage) {
   lock_acquire(&frame_table->lock);
   // 目前只支持一个frame映射到一个页表
   ASSERT(frames->ref == 0);
+  ASSERT(frames->pinned);
   frames->ref++;
   frames->pagedir = thread_current()->pagedir;
   frames->vaddr = (uint32_t)upage;
-  // 映射完之后就可以不需要pin住frame了
-  frames->pinned = false;
+  // palloc分配page时将对应的frame pin住，此时如果异常是来自于用户空间，frame可以不用被pin了
+  // 如果异常来自内核空间（即系统调用），在整个系统调用的过程中，这些frame都要pin住，不能被替换出去
+  if (!is_exception_from_kernel()) frames->pinned = false;
   lock_release(&frame_table->lock);
 }
 void unmap_frame(void* kpage) {
@@ -248,11 +310,14 @@ void unmap_frame(void* kpage) {
   ASSERT(page_from_pool(&user_pool, kpage));
   struct frame *frames = get_frame(kpage);
   lock_acquire(&frame_table->lock);
-  ASSERT(!frames->pinned);
+  // unmap的时候frame可以是pinned的
+  // ASSERT(!frames->pinned);
   // 目前只支持一个frame映射到一个页表
+  frames->pinned = false;
   frames->ref = 0;
   frames->pagedir = NULL;
   frames->vaddr = 0;
+  frames->t = NULL;
   lock_release(&frame_table->lock);
 }
 /** Obtains and returns a group of PAGE_CNT contiguous free pages.
@@ -278,16 +343,23 @@ palloc_get_multiple (enum palloc_flags flags, size_t page_cnt)
   if (page_idx != BITMAP_ERROR)
     pages = pool->base + PGSIZE * page_idx;
   else {
-    pages = (pool == &user_pool) ? clock_replacement(page_cnt) : NULL;
+    pages = ((pool == &user_pool) ? clock_replacement(page_cnt) : NULL);
   }
 
   if (pool == &user_pool && pages != NULL) {
-    static int user_pages = 0;
+    // printf("process %d alloc %d kpage\n", thread_current()->tid, get_kpage_no(pages));
+    // if (get_kpage_no(pages) == 345) {
+    //   frame_345 = get_frame(pages);
+    //   printf("process %d alloc 345 kpage\n", thread_current()->tid);
+    // }
+    // static int user_pages = 0;
     struct frame *frame = get_frame(pages);
     // page的分配和frame的ref的更新应该是原子性的，如果分配了page但是没有更新ref会导致：
     // 替换算法会将page对应的frame驱除出去
     lock_acquire(&frame_table->lock);
+    ASSERT(frame->ref == 0);
     frame->pinned = true;
+    frame->t = thread_current();
     lock_release(&frame_table->lock);
   }
 
@@ -349,18 +421,38 @@ palloc_free_multiple (void *pages, size_t page_cnt)
 #ifndef NDEBUG
   memset (pages, 0xcc, PGSIZE * page_cnt);
 #endif
-
-  ASSERT (bitmap_all (pool->used_map, page_idx, page_cnt));
-  bitmap_set_multiple (pool->used_map, page_idx, page_cnt, false);
-
+  // 释放frame应该在释放page之前，否则先释放了page，但是没有释放frame，其他线程可能会分配到这个page，但是frame的ref却不为0
   if (pool == &user_pool) {
     // 更新frame_table中的free_num
-    lock_acquire(&frame_table->lock);
-    frame_table->free_num += page_cnt;
-    lock_release(&frame_table->lock);
+    // lock_acquire(&frame_table->lock);
+    // frame_table->free_num += page_cnt;
+    // lock_release(&frame_table->lock);
     // 将frames释放
     unmap_frame(pages);
   }
+  if (bitmap_all (pool->used_map, page_idx, page_cnt) == false) {
+    printf("************pagd_idx:%d;**********\n", page_idx);
+    if (pool == &user_pool) {
+      printf("from user pool\n");
+    } else {
+      printf("from kernel pool\n");
+    }
+  }
+  if (pool == &user_pool) {
+    // if (thread_current()->tid == 4) {
+    //   printf("FUCKYOU\n");
+    // }
+    // printf("process %d free %d kpage\n", thread_current()->tid, get_kpage_no(pages));
+
+    // if (get_kpage_no(pages) == 345) {
+    //   printf("process %d free 345 kpage\n", thread_current()->tid);
+    // }
+  }
+
+  ASSERT (bitmap_all (pool->used_map, page_idx, page_cnt));
+
+  bitmap_set_multiple (pool->used_map, page_idx, page_cnt, false);
+
 }
 
 /** Frees the page at PAGE. */

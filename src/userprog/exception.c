@@ -119,6 +119,19 @@ kill (struct intr_frame *f)
       thread_exit ();
     }
 }
+static void
+read_data_from_file(struct intr_frame* f, struct vm_area_struct *vas, void *kpage, uint32_t read_offset, uint32_t page_read_bytes) {
+   // 栈区的file为空
+   if (vas->file == NULL) return;
+   struct file *file = vas->file;
+   file_seek(file, vas->file_pos + read_offset);
+   if (file_read(file, kpage, page_read_bytes) != page_read_bytes) {
+      palloc_free_page(kpage);
+      lock_release(&vas->lock);
+      lock_release(&filesys_lock);
+      kill(f);
+   }
+}
 // 鉴定为傻逼做法，要是复制结构体的时候数据被修改了怎么办？
 // static struct vm_area_struct * vas_copy(struct vm_area_struct *vas) {
 //    ASSERT(vas != NULL);
@@ -126,17 +139,12 @@ kill (struct intr_frame *f)
 //    memcpy((void*)new_vas, (void*)vas, sizeof(struct vm_area_struct));
 //    return new_vas;
 // }
-
-// static void
-// lru_replacer() {
-// 
-// }
 static void
 demand_paging(struct intr_frame* f, void *fault_addr) {
    lock_acquire(&thread_current()->mm->lock);
    // printf("************exception**************\n");
    // printf("%p\n", fault_addr);
-   struct vm_area_struct *vas = find_vm_area_struct((uint32_t)fault_addr, &thread_current()->mm->vm_area_list);
+   struct vm_area_struct *vas = find_vm_area_struct((uint32_t)fault_addr, thread_current()->mm);
    // 按需分页是由用户触发的异常，如果用户传入的地址不存在，那么就exit(-1)
    if (vas == NULL) {
       lock_release(&thread_current()->mm->lock);
@@ -144,12 +152,12 @@ demand_paging(struct intr_frame* f, void *fault_addr) {
    }
    lock_acquire(&vas->lock);
    lock_release(&thread_current()->mm->lock);
-   // printf("zero_bytes:%d;read_bytes:%d;file name:%s;offset:%d;writable:%d;vas->vm_start:%p;vas->vm_end:%p\n",vas->zero_bytes, vas->read_bytes, vas->name, vas->file_pos, vas->writable, vas->vm_start, vas->vm_end);
+   // printf("zero_bytes:%d;read_bytes:%d;file name:%s;offset:%d;writable:%d;vas->vm_start:%p;vas->vm_end:%p;is_stack:%d\n",vas->zero_bytes, vas->read_bytes, vas->file->name, vas->file_pos, vas->writable, vas->vm_start, vas->vm_end, vas->is_stack);
    // 栈的增长范围只允许在esp下面一个page内,新的栈要和旧的栈连续
    if (vas->is_stack) {
-      if (if_ != NULL) {
-         // 由于是在内核中出现的pagefault，所以intr_frame被替换，处理pagefault时使用的esp应该是用户的esp
-         f->esp = if_->esp;
+      // 由于是在内核中出现的pagefault，所以intr_frame被替换，处理pagefault时使用的esp应该是用户的esp
+      if (thread_current()->user_esp != NULL) {
+         f->esp = thread_current()->user_esp;
       }
       // esp要低于PHYS_BASE
       uint32_t esp = f->esp > PHYS_BASE ? PHYS_BASE : f->esp;
@@ -160,8 +168,6 @@ demand_paging(struct intr_frame* f, void *fault_addr) {
       } 
    }
    uint32_t upage = ROUND_DOWN((uint32_t)fault_addr, PGSIZE);
-
-
    uint32_t read_offset = upage - vas->vm_start;
    ASSERT(vas->vm_start <= upage && upage + PGSIZE <= vas->vm_end);
    uint32_t read_end = vas->vm_start + vas->read_bytes;
@@ -170,18 +176,12 @@ demand_paging(struct intr_frame* f, void *fault_addr) {
    size_t page_zero_bytes = PGSIZE - page_read_bytes;
    void* kpage = palloc_get_page(PAL_USER);
    ASSERT(kpage != NULL);
-   if (vas->name[0] != 0) {
-      struct file *file = filesys_open(vas->name);
-      if (file == NULL) printf("%s\n",vas->name);
-      ASSERT(file != NULL);
-      file_seek(file, vas->file_pos + read_offset);
-      if (file_read(file, kpage, page_read_bytes) != page_read_bytes) {
-         palloc_free_page(kpage);
-         lock_release(&vas->lock);
-         kill(f);
-      }
-      file_close(file);
-   }
+   // 锁的范围太小了，需要在函数每一次提前返回时都释放锁，非常容易漏写；
+   // 如果发现有内存泄漏或者重复拿锁，那么很有可能是你在某一个函数中提前返回时忘了释放资源
+   lock_acquire(&filesys_lock);
+   read_data_from_file(f, vas, kpage, read_offset, page_read_bytes);
+   lock_release(&filesys_lock);
+
    memset (kpage + page_read_bytes, 0, page_zero_bytes);
    if (!install_page((void*)upage, kpage, vas->writable)) {
       palloc_free_page(kpage);
@@ -237,6 +237,8 @@ page_fault (struct intr_frame *f)
   //         not_present ? "not present" : "rights violation",
   //         write ? "writing" : "reading",
   //         user ? "user" : "kernel");
+  // 不允许在内核中发生pagefault，所以这里一定不可能有filesys_lock
+   // ASSERT(!lock_held_by_current_thread(&filesys_lock));
    if (not_present) {
       ASSERT(!pagedir_is_present(thread_current()->pagedir, fault_addr));
 
@@ -254,9 +256,10 @@ page_fault (struct intr_frame *f)
       }
       else {
          // printf("**********read data from file sys**********\n");
-         if (!lock_held_by_current_thread(&filesys_lock)) lock_acquire(&filesys_lock);
+         // 不要在这里拿锁，因为demand_paging里面出错会调用kill，执行流被打断，锁不会被释放
+         // if (!lock_held_by_current_thread(&filesys_lock)) lock_acquire(&filesys_lock);
          demand_paging(f, fault_addr);
-         if (lock_held_by_current_thread(&filesys_lock)) lock_release(&filesys_lock);
+         // if (lock_held_by_current_thread(&filesys_lock)) lock_release(&filesys_lock);
       }
       // demand_paging(f, fault_addr);
       return; // 分配成功，从中断handler中返回

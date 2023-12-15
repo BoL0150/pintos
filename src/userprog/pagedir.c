@@ -171,7 +171,17 @@ pagedir_get_page (uint32_t *pd, const void *uaddr)
   else
     return NULL;
 }
-
+// clear_page函数仅仅只是将PTE的present位置为0，没有释放kpage和frame，不适合使用
+// 此函数将PTE置为0，并且释放kpage和frame
+void 
+pagedir_clear_pte_and_kpage (uint32_t *pd, void *upage) {
+  ASSERT(pd != NULL);
+  uint32_t *pte = lookup_page(pd, upage, false);
+  if (pte != NULL && (*pte & PTE_P) != 0) {
+    palloc_free_page(pte_get_page(*pte));
+    *pte = 0;
+  }
+}
 /** Marks user virtual page UPAGE "not present" in page
    directory PD.  Later accesses to the page will fault.  Other
    bits in the page table entry are preserved.

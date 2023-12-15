@@ -465,9 +465,42 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
   /* It's okay. */
   return true;
 }
-struct vm_area_struct*
-find_vm_area_struct(uint32_t upage, struct list* vm_area_list) {
+// 调用此函数前，vas已经从vm_area_list中移除了
+void 
+destory_mmap_vas(struct vm_area_struct* vas) {
+  ASSERT(vas != NULL);
+  lock_acquire(&vas->lock);
+  ASSERT(vas->is_mmap);
+  ASSERT(pg_ofs(vas->vm_start) == 0 && pg_ofs(vas->vm_end) == 0);
+  lock_acquire(&filesys_lock);
+  for (uint32_t upage = vas->vm_start; upage != vas->vm_end; upage += PGSIZE) {
+    // mmap取消映射时，如果是脏页需要写回文件
+    if (pagedir_is_dirty(thread_current()->pagedir, (void*)upage)) {
+      void *kpage = pagedir_get_page(thread_current()->pagedir, (void*)upage);
+      write_mmap_page_back(vas, (void*)upage, kpage);
+    }
+    pagedir_clear_pte_and_kpage(thread_current()->pagedir, (void*)upage);
+  }
+  file_close(vas->file);
+  lock_release(&filesys_lock);
+  lock_release(&vas->lock);
+  free(vas);
+}
+struct list_elem*
+find_mmap_vm_area_struct(int mapping) {
   ASSERT(lock_held_by_current_thread(&thread_current()->mm->lock));
+  struct list* vm_area_list = &thread_current()->mm->vm_area_list;
+  struct list_elem *e = list_begin(vm_area_list);
+  for (; e != list_end(vm_area_list); e = list_next(e)) {
+    struct vm_area_struct *vas = list_entry(e, struct vm_area_struct, vm_area_list_elem);
+    if (vas->is_mmap && vas->mapid == mapping) return e;
+  }
+  return NULL;
+}
+struct vm_area_struct*
+find_vm_area_struct(uint32_t upage, struct mm_struct* mm) {
+  ASSERT(lock_held_by_current_thread(&mm->lock));
+  struct list *vm_area_list = &mm->vm_area_list;
   struct list_elem *e = list_begin(vm_area_list);
   for (; e != list_end(vm_area_list); e = list_next(e)) {
     struct vm_area_struct *vas = list_entry(e, struct vm_area_struct, vm_area_list_elem);
@@ -479,22 +512,64 @@ find_vm_area_struct(uint32_t upage, struct list* vm_area_list) {
   return NULL;
 }
 static struct list_elem*
-find_first_greater_than(uint32_t upage, uint32_t memsize, struct list* vm_area_list) {
-  ASSERT(lock_held_by_current_thread(&thread_current()->mm->lock));
+find_first_greater_than(uint32_t upage, uint32_t memsize, struct mm_struct* mm) {
+  ASSERT(lock_held_by_current_thread(&mm->lock));
+  struct list * vm_area_list = &mm->vm_area_list;
   struct list_elem *e = list_begin(vm_area_list);
   for (; e != list_end(vm_area_list); e = list_next(e)) {
     struct vm_area_struct *vas = list_entry(e, struct vm_area_struct, vm_area_list_elem);
     // 新的映射不能与之前的映射重叠
     // printf("**********upage :%d vm_start: %d vm_end :%d*************\n", upage, vas->vm_start, vas->vm_end);
-    ASSERT(!(vas->vm_start < upage && upage < vas->vm_end));
-    if (vas->vm_start <= upage) {
+    // ASSERT(!(vas->vm_start < upage && upage < vas->vm_end));
+    if (vas->vm_start <= upage && upage < vas->vm_end) return NULL;
+
+    if (vas->vm_start < upage) {
       continue;
     }
     // 映射的尾部也要小于下一段的start
-    ASSERT(upage + memsize <= vas->vm_start);
+    // ASSERT(upage + memsize <= vas->vm_start);
+    if(upage + memsize > vas->vm_start) return NULL;
     break;
   }
   return e;
+}
+static int 
+check_mmap_argument(int fd, void *addr) {
+  if (fd == 0 || fd == 1) return -1;
+  if (addr == 0) return -1;
+  if (pg_ofs(addr) != 0) return -1;
+  if (thread_current()->ofile[fd] == NULL) return -1;
+  struct file *f = thread_current()->ofile[fd];
+  if (file_length(f) == 0) return -1;
+  return 1;
+}
+int create_mmap_vm_area_struct(int fd, void *addr) {
+  if (check_mmap_argument(fd, addr) == -1) return -1;
+
+  lock_acquire(&thread_current()->mm->lock);
+  struct file *f = thread_current()->ofile[fd];
+  struct list_elem *e = find_first_greater_than((uint32_t)addr, file_length(f), thread_current()->mm);
+  // 只有在重叠时才会返回NULL
+  if (e == NULL) {
+    lock_release(&thread_current()->mm->lock);
+    return -1;
+  } 
+  static int mmap_cnt = 1;
+  struct vm_area_struct *cur_vas = (struct vm_area_struct *)malloc(sizeof(struct vm_area_struct));
+  cur_vas->mapid = mmap_cnt++;
+  cur_vas->vm_start = (uint32_t)addr;
+  cur_vas->read_bytes = file_length(f);
+  cur_vas->zero_bytes = ROUND_UP(file_length(f), PGSIZE) - file_length(f);
+  cur_vas->vm_end = (uint32_t)addr + cur_vas->read_bytes + cur_vas->zero_bytes;
+  cur_vas->writable = true;
+  cur_vas->file_pos = 0;
+  cur_vas->file = file_reopen(thread_current()->ofile[fd]);
+  cur_vas->is_mmap = true;
+  cur_vas->is_stack = false;
+  lock_init(&cur_vas->lock);
+  list_insert(e, &cur_vas->vm_area_list_elem);
+  lock_release(&thread_current()->mm->lock);
+  return cur_vas->mapid;
 }
 static void
 create_vm_area_struct(uint32_t upage, uint32_t zero_bytes, uint32_t read_bytes, struct file *file, off_t ofs, bool writable, bool is_stack) {
@@ -503,37 +578,25 @@ create_vm_area_struct(uint32_t upage, uint32_t zero_bytes, uint32_t read_bytes, 
   ASSERT (ofs % PGSIZE == 0);
 
   lock_acquire(&thread_current()->mm->lock);
-  struct list *vm_area_list = &thread_current()->mm->vm_area_list;
-  struct list_elem * e = find_first_greater_than(upage, zero_bytes + read_bytes, vm_area_list);
+  struct list_elem * e = find_first_greater_than(upage, zero_bytes + read_bytes, thread_current()->mm);
+  ASSERT(e != NULL);
   struct vm_area_struct *cur_vas = (struct vm_area_struct*)malloc(sizeof(struct vm_area_struct));
-  // 如果是stack，把栈vm_area的起点设为上一个vm_area的终点
-  if (is_stack) {
-    ASSERT(!list_empty(&thread_current()->mm->vm_area_list));
-    ASSERT(e == list_end(&thread_current()->mm->vm_area_list));
-    struct list_elem *prev_elem = list_prev(e);
-    struct vm_area_struct *prev_vas = list_entry(prev_elem, struct vm_area_struct, vm_area_list_elem);
-    upage = prev_vas->vm_end + PGSIZE;
-    // printf("%p\n",(void*)upage);
-    // printf("%p\n",PHYS_BASE);
-    zero_bytes = PHYS_BASE - upage;
-    ASSERT(zero_bytes % PGSIZE == 0);
-  }
-
   // printf("upage:%p;zero_bytes:%d;read_bytes:%d;file name:%s;offset:%d;writable:%d;is_stack:%d\n",(void*)upage, zero_bytes, read_bytes, file == NULL ? NULL : file->name, ofs, writable, is_stack);
-
   list_insert(e, &cur_vas->vm_area_list_elem);
+  cur_vas->is_mmap = false;
   cur_vas->vm_start = upage;
   cur_vas->vm_end = upage + zero_bytes + read_bytes;
   cur_vas->writable = writable;
-  if (file!= NULL) strlcpy(cur_vas->name, file->name, strlen(file->name) + 1);
-  else cur_vas->name[0] = 0;
-  // cur_vas->inode = (file == NULL ? NULL : file->inode);
+  cur_vas->file = (file == NULL ? NULL : file_reopen(file));
   cur_vas->read_bytes = read_bytes;
   cur_vas->zero_bytes = zero_bytes;
   cur_vas->file_pos = ofs;
   cur_vas->is_stack = is_stack; // 如果该vm_area是栈区的话，允许动态增长
+  // if (is_stack) {
+  //   printf("vm_start:%p;vm_end:%p\n", (uint32_t)cur_vas->vm_start, (uint32_t)cur_vas->vm_end);
+  // }
   lock_init(&cur_vas->lock);
-  // printf("upage:%p;zero_bytes:%d;read_bytes:%d;file name:%s;offset:%d;writable:%d;cur_vas->vm_start:%p;cur_vas->vm_end:%p\n",(void*)upage, cur_vas->zero_bytes, cur_vas->read_bytes, cur_vas->name, cur_vas->file_pos, cur_vas->writable, cur_vas->vm_start, cur_vas->vm_end);
+  // printf("upage:%p;zero_bytes:%d;read_bytes:%d;offset:%d;writable:%d;cur_vas->vm_start:%p;cur_vas->vm_end:%p\n",(void*)upage, cur_vas->zero_bytes, cur_vas->read_bytes, cur_vas->file_pos, cur_vas->writable, cur_vas->vm_start, cur_vas->vm_end);
   lock_release(&thread_current()->mm->lock);
 }
 /** Loads a segment starting at offset OFS in FILE at address
@@ -600,7 +663,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       upage += PGSIZE;
     }
   #else
-  
   create_vm_area_struct((uint32_t)upage, zero_bytes, read_bytes, file, ofs, writable, false);
   #endif
   return true;
@@ -626,8 +688,9 @@ setup_stack (void **esp)
         palloc_free_page (kpage);
     }
   #else
-  // upage = (void*)((uint32_t)PHYS_BASE - 10 * PGSIZE);
-  create_vm_area_struct((uint32_t)upage, PGSIZE, 0, NULL, 0, true, true);
+  // 栈大小默认是8MB
+  upage = PHYS_BASE - 2000 * PGSIZE;
+  create_vm_area_struct((uint32_t)upage, PGSIZE * 2000, 0, NULL, 0, true, true);
   *esp = PHYS_BASE; 
   success = true;
   #endif
@@ -643,7 +706,10 @@ setup_stack (void **esp)
    KPAGE should probably be a page obtained from the user pool
    with palloc_get_page().
    Returns true on success, false if UPAGE is already mapped or
-   if memory allocation fails. */
+   if memory allocation fails. 
+   实现了按需分页后，此函数只会在page_fault handler中被调用，is_exception_from_kernel表明
+   这次缺页异常来自于内核（系统调用入口处）还是用户，如果是内核，那么install的page不能被驱逐
+   出内存，因为内核中不允许发生pagefault **/
 bool
 install_page (void *upage, void *kpage, bool writable)
 {
