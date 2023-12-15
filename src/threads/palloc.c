@@ -95,11 +95,7 @@ write_mmap_page_back(struct vm_area_struct *mmap_vas, void *upage, void *data_pa
 
 static void 
 evict(struct frame *cur_frame) {
-  // printf("process %d evict %d kpage\n", thread_current()->tid, get_frame_no(cur_frame));
-  // if (get_frame_no(cur_frame) == 345) {
-  //   printf("345\n");
-  // }
-  // ASSERT(lock_held_by_current_thread(&frame_table->lock));
+  // printf("process %d evict %d kpage dirty %d\n", thread_current()->tid, get_frame_no(cur_frame), pagedir_is_dirty(cur_frame->pagedir, cur_frame->vaddr));
   ASSERT(lock_held_by_current_thread(&frame_table->lock));
   void *data_page = get_data_page(cur_frame);
   ASSERT(!cur_frame->pinned);
@@ -118,7 +114,9 @@ evict(struct frame *cur_frame) {
     ASSERT(vas != NULL);
     if (vas->is_mmap) {
       lock_acquire(&filesys_lock);
+      // 将mmap的数据写回之后还要把pte清空，否则会出现两个pte指向同一个kpage的情况
       write_mmap_page_back(vas, vaddr, data_page);
+      pagedir_clear_page(pagedir, vaddr);
       lock_release(&filesys_lock);
     } else {
       // 将数据写入交换分区
@@ -335,7 +333,6 @@ palloc_get_multiple (enum palloc_flags flags, size_t page_cnt)
 
   if (page_cnt == 0)
     return NULL;
-  // ASSERT(page_cnt == 1);
 
   lock_acquire (&pool->lock);
   page_idx = bitmap_scan_and_flip (pool->used_map, 0, page_cnt, false);
@@ -347,12 +344,6 @@ palloc_get_multiple (enum palloc_flags flags, size_t page_cnt)
   }
 
   if (pool == &user_pool && pages != NULL) {
-    // printf("process %d alloc %d kpage\n", thread_current()->tid, get_kpage_no(pages));
-    // if (get_kpage_no(pages) == 345) {
-    //   frame_345 = get_frame(pages);
-    //   printf("process %d alloc 345 kpage\n", thread_current()->tid);
-    // }
-    // static int user_pages = 0;
     struct frame *frame = get_frame(pages);
     // page的分配和frame的ref的更新应该是原子性的，如果分配了page但是没有更新ref会导致：
     // 替换算法会将page对应的frame驱除出去
@@ -430,25 +421,6 @@ palloc_free_multiple (void *pages, size_t page_cnt)
     // 将frames释放
     unmap_frame(pages);
   }
-  if (bitmap_all (pool->used_map, page_idx, page_cnt) == false) {
-    printf("************pagd_idx:%d;**********\n", page_idx);
-    if (pool == &user_pool) {
-      printf("from user pool\n");
-    } else {
-      printf("from kernel pool\n");
-    }
-  }
-  if (pool == &user_pool) {
-    // if (thread_current()->tid == 4) {
-    //   printf("FUCKYOU\n");
-    // }
-    // printf("process %d free %d kpage\n", thread_current()->tid, get_kpage_no(pages));
-
-    // if (get_kpage_no(pages) == 345) {
-    //   printf("process %d free 345 kpage\n", thread_current()->tid);
-    // }
-  }
-
   ASSERT (bitmap_all (pool->used_map, page_idx, page_cnt));
 
   bitmap_set_multiple (pool->used_map, page_idx, page_cnt, false);
