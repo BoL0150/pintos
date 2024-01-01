@@ -1,3 +1,5 @@
+#include "filesys/inode.h"
+#include "filesys/directory.h"
 #include "threads/palloc.h"
 #include "userprog/syscall.h"
 #include "user/syscall.h"
@@ -101,7 +103,7 @@ static int32_t sys_create(void){
   uint32_t initial_size = argint(2);
   lock_acquire(&filesys_lock);
   // printf("fuck\n");
-  uint32_t ret = (uint32_t)filesys_create(file, initial_size);
+  uint32_t ret = (uint32_t)filesys_create(file, initial_size, false);
   // printf("fuck you\n");
   lock_release(&filesys_lock);
   unpin_user_frame(1, -1);
@@ -240,11 +242,54 @@ static int32_t sys_munmap(void) {
   lock_release(&thread_current()->mm->lock);
   return 0;
 }
-// static uint32_t sys_chdir(void){}
-// static uint32_t sys_mkdir(void){}
-// static uint32_t sys_readdir(void){}
-// static uint32_t sys_isdir(void){}
-// static uint32_t sys_inumber(void){}
+static int32_t sys_chdir(void) {
+  char *path = (char*)argaddr(1, true, -1);
+  struct dir *dir = name_inode(path);
+  if (dir == NULL) {
+    dir_close(dir);
+    return false;
+  }
+  thread_current()->cwd = dir;
+  unpin_user_frame(1, -1);
+  return true;
+}
+static int32_t sys_mkdir(void) {
+  char * path = (char*)argaddr(1, true, -1);
+  uint32_t success = (uint32_t)filesys_create(path, 0, true);
+  if (success) {
+    struct dir *dir = name_inode(path);
+    char temp[NAME_MAX];
+    struct dir *parent_dir = name_inode_parent(path, temp);
+    ASSERT(dir != NULL && is_inode_dir(dir_get_inode(dir)));
+    enum intr_level old_level = intr_disable();
+    // 不加nlink计数
+    dir_add(dir, ".", dir_get_inode(dir)->sector);
+    dir_add(dir, "..", dir_get_inode(parent_dir)->sector);
+    intr_set_level(old_level);
+  }
+  unpin_user_frame(1, -1);
+  return success;
+}
+static int32_t sys_readdir(void) {
+  int fd = arg_fd(1);
+  char *name = (char*)argaddr(2, true, READDIR_MAX_LEN + 1);
+  struct file *file = thread_current()->ofile[fd];
+  struct dir *dir = dir_open(inode_reopen(file->inode));
+  ASSERT(dir_readdir(dir, name) && strcmp(name, ".") == 0);
+  ASSERT(dir_readdir(dir, name) && strcmp(name, "..") == 0);
+  bool success = dir_readdir(dir, name);
+  dir_close(dir);
+  unpin_user_frame(2, READDIR_MAX_LEN + 1);
+  return success;
+}
+static int32_t sys_isdir(void) {
+  int fd = arg_fd(1);
+  return is_inode_dir(thread_current()->ofile[fd]->inode);
+}
+static int32_t sys_inumber(void) {
+  int fd = arg_fd(1);
+  return inode_get_inumber(thread_current()->ofile[fd]->inode);
+}
 static int32_t (*syscalls[])(void) = {
   [EXIT_FROM_USER] exit_from_user,
   [SYS_HALT] sys_halt,
@@ -261,7 +306,12 @@ static int32_t (*syscalls[])(void) = {
   [SYS_TELL] sys_tell,
   [SYS_CLOSE] sys_close,
   [SYS_MMAP] sys_mmap,
-  [SYS_MUNMAP] sys_munmap
+  [SYS_MUNMAP] sys_munmap,
+  [SYS_CHDIR] sys_chdir,
+  [SYS_MKDIR] sys_mkdir,
+  [SYS_READDIR] sys_readdir,
+  [SYS_ISDIR] sys_isdir,
+  [SYS_INUMBER] sys_inumber
 };
 void
 syscall_init (void) 

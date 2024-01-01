@@ -1,3 +1,4 @@
+#include "filesys/directory.h"
 #include "devices/block.h"
 #include "fixed-point.h"
 #include "threads/init.h"
@@ -128,7 +129,7 @@ pintos_init (void)
   locate_block_devices ();
   filesys_init (format_filesys);
 #endif
-
+  thread_current()->cwd = dir_open_root();
 #ifdef VM
   swap_table_init();
 #endif

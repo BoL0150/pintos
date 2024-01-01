@@ -137,6 +137,7 @@ inode_unlock(struct inode *inode) {
 static void
 inode_update(struct inode *inode) {
   ASSERT(inode != NULL && lock_held_by_current_thread(&inode->lock) && inode->valid && inode->open_cnt >= 1);
+  inode->data.nlink = inode->nlink;
   buf_write(inode->sector, 0, (void*)(&inode->data), BLOCK_SECTOR_SIZE);
 }
 /** Initializes an inode with LENGTH bytes of data and
@@ -147,7 +148,7 @@ inode_update(struct inode *inode) {
 // 在sector位置处创建一个inode，并且将inode的数据长度初始化为length；
 // Inode的位置在调用此函数之前已经被分配好了，此函数只需要为数据块分配空间即可
 bool
-inode_create (block_sector_t sector, off_t length, bool lazy)
+inode_create (block_sector_t sector, off_t length, bool lazy, bool is_dir)
 {
   struct inode_disk *disk_inode = NULL;
   bool success = false;
@@ -166,6 +167,7 @@ inode_create (block_sector_t sector, off_t length, bool lazy)
       disk_inode->length = length;
       disk_inode->magic = INODE_MAGIC;
       disk_inode->nlink = 0;
+      disk_inode->is_dir = is_dir;
       for (int i = 0; i < NDIRECT + NINDIRECT + NININDIRECT; i++) {
         ASSERT(disk_inode->addrs[i] == 0);
       }
@@ -257,9 +259,11 @@ inode_open (block_sector_t sector)
 struct inode *
 inode_reopen (struct inode *inode)
 {
-  ASSERT(intr_get_level() == INTR_OFF);
+  // ASSERT(intr_get_level() == INTR_OFF);
+  enum intr_level old_level = intr_disable();
   if (inode != NULL)
     inode->open_cnt++;
+  intr_set_level(old_level);
   return inode;
 }
 
@@ -267,8 +271,10 @@ inode_reopen (struct inode *inode)
 block_sector_t
 inode_get_inumber (const struct inode *inode)
 {
-  ASSERT(intr_get_level() == INTR_OFF);
-  return inode->sector;
+  enum intr_level old_level = intr_disable();
+  block_sector_t inumber = inode->sector;
+  intr_set_level(old_level);
+  return inumber;
 }
 
 /** Closes INODE and writes it to disk.
@@ -282,19 +288,20 @@ inode_close (struct inode *inode)
     return;
   enum intr_level old_level = intr_disable();
   /* Release resources if this was the last opener. */
-  // inode如果不是valid不需要释放资源，直接将open_cnt -1即可
-  if (inode->open_cnt == 1 && inode->valid && inode->nlink == 0)
-    {
-      /* Remove from inode list and release lock. */
-      list_remove (&inode->elem);
+  if (inode->open_cnt == 1) {
+    list_remove(&inode->elem);
+    // 只有valid才有可能修改过nlink，才有必要释放磁盘的数据
+    if (inode->valid && inode->nlink == 0) {
       bool locked = inode_lock(inode);
-      /* Deallocate blocks if removed. */
-      if (inode->removed) free_inode_disk_data(inode);
+      free_inode_disk_data(inode); 
+      // 由于inode被从icache中驱逐了，并且free_inode_disk_data修改了inode，所以这里要把更新写回上一层缓存
       inode_update(inode);
       if (locked) inode_unlock(inode);
-      free (inode); 
     }
-  inode->open_cnt--;
+    free(inode);
+  } else {
+    inode->open_cnt--;
+  }
   intr_set_level(old_level);
 }
 // 释放sector的时候除了需要把bitmap中置位（同时写回磁盘），不需要把内存中的sector置为INVALID，因为用户非要访问，得到垃圾内容不能怪我们
@@ -337,11 +344,15 @@ void free_data_block(block_sector_t *addrs, size_t length, size_t depth) {
 /** Marks INODE to be deleted when it is closed by the last caller who
    has it open. */
 void
-inode_remove (struct inode *inode) 
+inode_unlink (struct inode *inode) 
 {
   enum intr_level old_level = intr_disable();
   ASSERT (inode != NULL);
-  inode->removed = true;
+  bool locked = inode_lock(inode);
+  ASSERT(inode->nlink >= 1);
+  inode->nlink--;
+  inode->data.nlink = inode->nlink;
+  inode_unlock(locked);
   intr_set_level(old_level);
 }
 
@@ -523,5 +534,13 @@ inode_length (const struct inode *inode)
   bool locked = inode_lock(inode);
   off_t res = inode->data.length;
   if(locked) inode_unlock(inode);
+  return res;
+}
+
+bool
+is_inode_dir(struct inode *inode) {
+  bool locked = inode_lock(inode);
+  bool res = inode->data.is_dir;
+  if (locked) inode_unlock(inode);
   return res;
 }

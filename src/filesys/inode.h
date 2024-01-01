@@ -19,11 +19,12 @@ struct bitmap;
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk
   {
-    uint32_t nlink;                   /**< inode有几个硬链接. */
+    bool is_dir;                        /**是否是目录 */
+    uint32_t nlink;                     /**< inode有几个硬链接. */
     off_t length;                       /**< File size in bytes. */
     unsigned magic;                     /**< Magic number. */
     block_sector_t addrs[NADDRS];             /** addrs*/
-    uint32_t unused[125 - NADDRS];      /**< Not used. */
+    uint32_t unused[124 - NADDRS];      /**< Not used. */
   };
 /** In-memory inode. */
 struct inode 
@@ -39,16 +40,17 @@ struct inode
     struct lock lock;
   };
 void inode_init (void);
-bool inode_create (block_sector_t, off_t, bool lazy);
+bool inode_create (block_sector_t, off_t, bool lazy, bool is_dir);
 struct inode *inode_open (block_sector_t);
 struct inode *inode_reopen (struct inode *);
 block_sector_t inode_get_inumber (const struct inode *);
 void inode_close (struct inode *);
-void inode_remove (struct inode *);
+void inode_unlink (struct inode *);
 off_t inode_read_at (struct inode *, void *, off_t size, off_t offset);
 off_t inode_write_at (struct inode *, const void *, off_t size, off_t offset);
 void inode_deny_write (struct inode *);
 void inode_allow_write (struct inode *);
 off_t inode_length (const struct inode *);
+bool is_inode_dir(struct inode *inode);
 
 #endif /**< filesys/inode.h */

@@ -75,7 +75,7 @@ free_map_create (void)
 {
   /* Create inode. */
   // 为free_map创建一个inode，inode位于FREE_MAP_SECTOR（1）处，然后再找bitmap_file_size(free_map)大小的sector分配给数据块
-  if (!inode_create (FREE_MAP_SECTOR, bitmap_file_size (free_map), false))
+  if (!inode_create (FREE_MAP_SECTOR, bitmap_file_size (free_map), false, false))
     PANIC ("free map creation failed");
 
   /* Write bitmap to file. */

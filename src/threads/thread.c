@@ -519,7 +519,7 @@ thread_exit (void)
   if (thread_current() != initial_thread) update_tes();
   free_child_list(thread_current());
   free_open_file(thread_current());
-
+  dir_close(thread_current()->cwd);
   thread_current ()->status = THREAD_DYING;
   schedule ();
   NOT_REACHED ();
@@ -716,7 +716,6 @@ init_thread (struct thread *t, const char *name, int priority)
   t->exit_state = 0;
   
   t->nice = 0;
-  t->cwd = dir_open_root();
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   if (!thread_mlfqs) t->priority = priority;

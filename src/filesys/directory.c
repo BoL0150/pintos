@@ -26,7 +26,7 @@ struct dir_entry
 bool
 dir_create (block_sector_t sector, size_t entry_cnt)
 {
-  return inode_create (sector, entry_cnt * sizeof (struct dir_entry), true);
+  return inode_create (sector, entry_cnt * sizeof (struct dir_entry), true, true);
 }
 
 /** Opens and returns the directory for the given INODE, of which
@@ -123,7 +123,7 @@ dir_lookup (const struct dir *dir, const char *name,
 
   ASSERT (dir != NULL);
   ASSERT (name != NULL);
-
+  if (!is_inode_dir(dir->inode)) return false;
   if (lookup (dir, name, &e, NULL))
     *inode = inode_open (e.inode_sector);
   else
@@ -181,7 +181,16 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
   if (success) ASSERT(inode != NULL);
   return success;
 }
-
+// 除了.和..之外，目录是否为空
+static bool
+is_dir_empty(struct inode *inode) {
+  ASSERT(is_inode_dir(inode));
+  struct dir_entry e;
+  for (int off = 2 * sizeof(struct dir_entry); inode_read_at(inode, &e, sizeof e, off) == sizeof e; off += sizeof e) {
+    if (e.in_use) return false;
+  }
+  return true;
+}
 /** Removes any entry for NAME in DIR.
    Returns true if successful, false on failure,
    which occurs only if there is no file with the given NAME. */
@@ -199,19 +208,21 @@ dir_remove (struct dir *dir, const char *name)
   /* Find directory entry. */
   if (!lookup (dir, name, &e, &ofs))
     goto done;
-
   /* Open inode. */
   inode = inode_open (e.inode_sector);
   if (inode == NULL)
     goto done;
-
+  // 如果要remove的对象是目录，并且目录不为空，那么失败
+  if (is_inode_dir(inode) && !is_dir_empty(inode)) {
+    goto done;  
+  }
   /* Erase directory entry. */
   e.in_use = false;
   if (inode_write_at (dir->inode, &e, sizeof e, ofs) != sizeof e) 
     goto done;
 
   /* Remove inode. */
-  inode_remove (inode);
+  inode_unlink(inode);
   success = true;
 
  done:
@@ -243,11 +254,19 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
 
 // 解析给定的路径名path
 // 它提取出path中的下一个元素，并拷贝到name中，然后返回在下个元素之后的后续路径
+// Examples:
+//   skipelem("a/bb/c", name) = "bb/c", setting name = "a"
+//   skipelem("///a//bb", name) = "bb", setting name = "a"
+//   skipelem("a", name) = "", setting name = "a"
+//   skipelem("", name) = skipelem("////", name) = 0
+//
 static char*
 skipelem(char *path, char *name) {
   while (*path == '/') path++;
+  // 如果path的元素是0，那么说明path中没有任何元素，直接返回NULL
   if (*path == '\0') return NULL;
   char *s = path;
+  // 搜索到/或者0停止
   while (*path != '/' && *path != '\0') path++;
   int len = path - s;
   if (len >= NAME_MAX) {
@@ -257,23 +276,25 @@ skipelem(char *path, char *name) {
     memcpy(name, s, len);
     name[len] = '\0';
   }
+  // 最后将指针推进到斜杠之外的下一个元素
   while (*path == '/') path++;
   return path;
 }
 
-static struct inode*
+static struct dir*
 namex(char *path, int nameiparent, char *name)
 {
   struct dir *dir;
-
-  if(*path == '/') dir = dir_open_root();
+  if (*path == 0) return NULL;
+  if (*path == '/') dir = dir_open_root();
   else dir = dir_reopen(thread_current()->cwd);
   struct inode *next;
+  // 如果没有下一个元素那么就结束了
   while((path = skipelem(path, name)) != 0){
+    // 如果我们要获取父节点的inode，那么当剩下的path是空的时，就可以返回。
+    // 此时已经获取了path中的最后一个元素name，dir中的inode也是name的上一级inode
     if(nameiparent && *path == '\0'){
-      struct inode *ret = dir->inode;
-      dir_close(dir);
-      return ret;
+      return dir;
     }
     if(!dir_lookup(dir, name, &next)){
       dir_close(dir);
@@ -282,23 +303,24 @@ namex(char *path, int nameiparent, char *name)
     dir_close(dir);
     dir = dir_open(next);
   }
-  struct inode *ret = dir->inode;
-  dir_close(dir);
   if(nameiparent){
+    dir_close(dir);
     return NULL;
   }
-  return ret;
+  return dir;
 }
-// namei返回路径名中最后一个元素的inode；而nameiparent返回最后一个元素的父目录的inode，
-// 并且将最后一个元素的名称复制到调用者指定的位置*name中
-struct inode*
+// namei返回路径名中最后一个元素的inode
+// 如果没有找到就返回NULL
+struct dir*
 name_inode(char *path)
 {
   char name[NAME_MAX];
   return namex(path, 0, name);
 }
-
-struct inode*
+// nameiparent返回最后一个元素的父目录的inode，
+// 并且将最后一个元素的名称复制到调用者指定的位置*name中
+// 比name_inode提前停止一个等级
+struct dir*
 name_inode_parent(char *path, char *name)
 {
   return namex(path, 1, name);

@@ -49,23 +49,26 @@ filesys_done (void)
    Fails if a file named NAME already exists,
    or if internal memory allocation fails. */
 bool
-filesys_create (const char *name, off_t initial_size) 
+filesys_create (const char *path, off_t initial_size, bool is_dir) 
 {
   if (list_size(&ready_list) != 0) {
     ASSERT(lock_held_by_current_thread(&filesys_lock));
   }
   block_sector_t inode_sector = 0;
-  struct dir *dir = dir_open_root ();
+  char name[NAME_MAX];
+  struct dir *dir = name_inode_parent(path, name);
+  struct inode *inode;
+  // 要求path中最后一个元素之前的所有元素都存在（dir != NULL)，并且最后一个元素不存在
   bool success = (dir != NULL
+                  && !dir_lookup(dir, name, &inode)
                   && free_map_allocate (1, &inode_sector)
-                  && inode_create (inode_sector, initial_size, true)
-                  && dir_add (dir, name, inode_sector));
+                  && inode_create(inode_sector, initial_size, true, is_dir)
+                  && dir_add(dir, name, inode_sector));
   if (!success && inode_sector != 0) 
-    free_map_release (inode_sector, 1);
-  dir_close (dir);
+    free_map_release(inode_sector, 1);
+  dir_close(dir);
   return success;
 }
-
 /** Opens the file with the given NAME.
    Returns the new file if successful or a null pointer
    otherwise.
@@ -74,10 +77,11 @@ filesys_create (const char *name, off_t initial_size)
 struct file *
 filesys_open (const char *name)
 {
-  struct inode* inode = name_inode(name);
-  if (inode == NULL) return NULL;
-  struct file *f = file_open(inode);
+  struct dir* dir = name_inode(name);
+  if (dir == NULL) return NULL;
+  struct file *f = file_open(inode_reopen(dir_get_inode(dir)));
   if (f != NULL) strlcpy(f->name, name, strlen(name) + 1);
+  dir_close(dir);
   return f;
 
   // struct dir *dir = dir_open_root ();
@@ -102,10 +106,10 @@ filesys_remove (const char *name)
   if (list_size(&ready_list) != 0) {
     ASSERT(lock_held_by_current_thread(&filesys_lock));
   }
-  struct dir *dir = dir_open_root ();
-  bool success = dir != NULL && dir_remove (dir, name);
-  dir_close (dir); 
-
+  char remove_name[NAME_MAX];
+  struct dir *parent_dir = name_inode_parent(name, remove_name);
+  bool success = ((parent_dir != NULL) && dir_remove(parent_dir, remove_name));
+  dir_close(parent_dir);
   return success;
 }
 
