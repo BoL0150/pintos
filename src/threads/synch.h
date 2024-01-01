@@ -25,6 +25,7 @@ struct lock
     struct list_elem elem;
     struct thread *holder;      /**< Thread holding lock (for debugging). */
     struct semaphore semaphore; /**< Binary semaphore controlling access. */
+    struct inode *inode;
   };
 
 void update_upstream_thread_pri (struct thread *t, int priority);
@@ -43,6 +44,7 @@ void sema_self_test (void);
 
 
 void lock_init (struct lock *);
+void inode_lock_init(struct inode *inode);
 void lock_acquire (struct lock *);
 bool lock_try_acquire (struct lock *);
 void lock_release (struct lock *);

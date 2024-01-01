@@ -24,10 +24,10 @@ typedef uint32_t block_sector_t;
 enum block_type
   {
     /* Block device types that play a role in Pintos. */
-    BLOCK_KERNEL,                /**< Pintos OS kernel. */
     BLOCK_FILESYS,               /**< File system. */
     BLOCK_SCRATCH,               /**< Scratch. */
     BLOCK_SWAP,                  /**< Swap. */
+    BLOCK_KERNEL,                /**< Pintos OS kernel. */
     BLOCK_ROLE_CNT,
 
     /* Other kinds of block devices that Pintos may see but does

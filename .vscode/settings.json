@@ -60,6 +60,14 @@
         "ostream": "c",
         "system_error": "c",
         "block.h": "c",
-        "stdlib.h": "c"
+        "stdlib.h": "c",
+        "buf.h": "c",
+        "array": "c",
+        "initializer_list": "c",
+        "utility": "c",
+        "cstdlib": "c",
+        "cstdio": "c",
+        "inode.h": "c",
+        "bitmap.h": "c"
     }
 }

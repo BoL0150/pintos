@@ -1,3 +1,4 @@
+#include "userprog/process.h"
 #include "filesys/fsutil.h"
 #include <debug.h>
 #include <stdio.h>
@@ -123,7 +124,6 @@ fsutil_extract (char **argv UNUSED)
           dst = filesys_open (file_name);
           if (dst == NULL)
             PANIC ("%s: open failed", file_name);
-
           /* Do copy. */
           while (size > 0)
             {
@@ -136,7 +136,6 @@ fsutil_extract (char **argv UNUSED)
                        file_name, size);
               size -= chunk_size;
             }
-
           /* Finish up. */
           file_close (dst);
         }

@@ -245,7 +245,6 @@ page_fault (struct intr_frame *f)
       if (is_data_on_swap_partition(thread_current()->pagedir, fault_addr)) {
          // printf("**********read data from swap partition**********\n");
          void *kpage = palloc_get_page(PAL_USER);
-         size_t swap_slot_idx = fetch_data_from_swap_parition(thread_current()->pagedir, fault_addr, kpage);
          void *upage = (void*)ROUND_DOWN((uint32_t)fault_addr, PGSIZE);
          install_page((void*)upage, kpage, pagedir_is_writable(thread_current()->pagedir, fault_addr));
          // 从交换分区中重新fetch数据、install PTE后，不需要取消新的PTE的swap flag（因为新的pte的swap flag本来就是0），

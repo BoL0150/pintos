@@ -25,7 +25,8 @@
    PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR
    MODIFICATIONS.
 */
-
+#include "filesys/inode.h"
+#include "lib/string.h"
 #include "threads/synch.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -309,7 +310,11 @@ lock_init (struct lock *lock)
   lock->holder = NULL;
   sema_init (&lock->semaphore, 1);
 }
-
+void
+inode_lock_init(struct inode *inode) {
+  lock_init(&inode->lock);
+  inode->lock.inode = inode;
+}
 /** Acquires LOCK, sleeping until it becomes available if
    necessary.  The lock must not already be held by the current
    thread.
@@ -325,6 +330,9 @@ lock_acquire (struct lock *lock)
   ASSERT (!intr_context ());
   // 保持lock->holder、lock->sema、lock->hodler->lock_list的更新的原子性
   enum intr_level old_level = intr_disable();
+  // if (lock->inode != NULL) {
+  //   printf("thread %d acquire inode %p \n", thread_current()->tid, lock->inode);
+  // }
   ASSERT (!lock_held_by_current_thread (lock));
   // if (!thread_mlfqs) pri_inverse_sema_down(lock);
   // else sema_down(&lock->semaphore);
@@ -364,6 +372,10 @@ lock_release (struct lock *lock)
   ASSERT (lock != NULL);
   bool yield = false;
   enum intr_level old_level = intr_disable();
+
+  // if (lock->inode != NULL) {
+  //   printf("thread %d release inode %p \n", thread_current()->tid, lock->inode);
+  // }
 
   ASSERT (lock_held_by_current_thread (lock));
   lock->holder = NULL;

@@ -26,7 +26,7 @@ struct dir_entry
 bool
 dir_create (block_sector_t sector, size_t entry_cnt)
 {
-  return inode_create (sector, entry_cnt * sizeof (struct dir_entry));
+  return inode_create (sector, entry_cnt * sizeof (struct dir_entry), true);
 }
 
 /** Opens and returns the directory for the given INODE, of which
@@ -163,6 +163,7 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
      inode_read_at() will only return a short read at end of file.
      Otherwise, we'd need to verify that we didn't get a short
      read due to something intermittent such as low memory. */
+  // 读取目录的inode的数据块，从0开始，一条一条地读取目录项到e中，找到空闲的目录项
   for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
        ofs += sizeof e) 
     if (!e.in_use)
@@ -174,7 +175,10 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
   e.inode_sector = inode_sector;
   success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
 
+  struct inode * inode = NULL;
  done:
+  dir_lookup(dir, name, &inode);
+  if (success) ASSERT(inode != NULL);
   return success;
 }
 
@@ -233,4 +237,69 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
         } 
     }
   return false;
+}
+
+// paths
+
+// 解析给定的路径名path
+// 它提取出path中的下一个元素，并拷贝到name中，然后返回在下个元素之后的后续路径
+static char*
+skipelem(char *path, char *name) {
+  while (*path == '/') path++;
+  if (*path == '\0') return NULL;
+  char *s = path;
+  while (*path != '/' && *path != '\0') path++;
+  int len = path - s;
+  if (len >= NAME_MAX) {
+    memcpy(name, s, NAME_MAX);
+    name[NAME_MAX] = '\0';
+  } else {
+    memcpy(name, s, len);
+    name[len] = '\0';
+  }
+  while (*path == '/') path++;
+  return path;
+}
+
+static struct inode*
+namex(char *path, int nameiparent, char *name)
+{
+  struct dir *dir;
+
+  if(*path == '/') dir = dir_open_root();
+  else dir = dir_reopen(thread_current()->cwd);
+  struct inode *next;
+  while((path = skipelem(path, name)) != 0){
+    if(nameiparent && *path == '\0'){
+      struct inode *ret = dir->inode;
+      dir_close(dir);
+      return ret;
+    }
+    if(!dir_lookup(dir, name, &next)){
+      dir_close(dir);
+      return NULL;
+    }
+    dir_close(dir);
+    dir = dir_open(next);
+  }
+  struct inode *ret = dir->inode;
+  dir_close(dir);
+  if(nameiparent){
+    return NULL;
+  }
+  return ret;
+}
+// namei返回路径名中最后一个元素的inode；而nameiparent返回最后一个元素的父目录的inode，
+// 并且将最后一个元素的名称复制到调用者指定的位置*name中
+struct inode*
+name_inode(char *path)
+{
+  char name[NAME_MAX];
+  return namex(path, 0, name);
+}
+
+struct inode*
+name_inode_parent(char *path, char *name)
+{
+  return namex(path, 1, name);
 }

@@ -15,6 +15,7 @@ free_map_init (void)
   free_map = bitmap_create (block_size (fs_device));
   if (free_map == NULL)
     PANIC ("bitmap creation failed--file system device is too large");
+  bitmap_mark (free_map, INVALID_SECTOR);
   bitmap_mark (free_map, FREE_MAP_SECTOR);
   bitmap_mark (free_map, ROOT_DIR_SECTOR);
 }
@@ -73,10 +74,12 @@ void
 free_map_create (void) 
 {
   /* Create inode. */
-  if (!inode_create (FREE_MAP_SECTOR, bitmap_file_size (free_map)))
+  // 为free_map创建一个inode，inode位于FREE_MAP_SECTOR（1）处，然后再找bitmap_file_size(free_map)大小的sector分配给数据块
+  if (!inode_create (FREE_MAP_SECTOR, bitmap_file_size (free_map), false))
     PANIC ("free map creation failed");
 
   /* Write bitmap to file. */
+  // 将bitmap的inode作为一个文件打开，然后调用读写文件的接口将内存中的bitmap写入到磁盘中的bitmap的数据块中
   free_map_file = file_open (inode_open (FREE_MAP_SECTOR));
   if (free_map_file == NULL)
     PANIC ("can't open free map");

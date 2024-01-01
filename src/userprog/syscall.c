@@ -89,7 +89,6 @@ static int32_t sys_exec(void){
   lock_acquire(&filesys_lock);
   int32_t res = process_execute(cmd_line);
   lock_release(&filesys_lock);
-  // if (res == TID_ERROR) exit_from_user_process(-1);
   unpin_user_frame(1, -1);
   return res;
 } 

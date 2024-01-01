@@ -1,33 +1,45 @@
 #ifndef FILESYS_INODE_H
 #define FILESYS_INODE_H
 
+#include "threads/synch.h"
 #include <stdbool.h>
 #include "filesys/off_t.h"
 #include "devices/block.h"
 #include "lib/kernel/list.h"
+#define NDIRECT 10
+#define NINDIRECT 1
+#define NININDIRECT 1
+#define NADDRS (NDIRECT + NINDIRECT + NININDIRECT)
+#define DIRECT_SECTOR_NUM (NDIRECT)
+#define INDIRECT_SECTOR_NUM ((NINDIRECT * BLOCK_SECTOR_SIZE) / sizeof(uint32_t))
+#define ININDIRECT_SECTOR_NUM ((NININDIRECT * INDIRECT_SECTOR_NUM * BLOCK_SECTOR_SIZE) / sizeof(uint32_t))
 struct bitmap;
 
 /** On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk
   {
-    block_sector_t start;               /**< First data sector. */
+    uint32_t nlink;                   /**< inode有几个硬链接. */
     off_t length;                       /**< File size in bytes. */
     unsigned magic;                     /**< Magic number. */
-    uint32_t unused[125];               /**< Not used. */
+    block_sector_t addrs[NADDRS];             /** addrs*/
+    uint32_t unused[125 - NADDRS];      /**< Not used. */
   };
 /** In-memory inode. */
 struct inode 
   {
+    uint32_t nlink;                     /** the nlink in disk inode*/
+    bool valid;                         /**Inode中是否有数据*/
     struct list_elem elem;              /**< Element in inode list. */
     block_sector_t sector;              /**< Sector number of disk location. */
     int open_cnt;                       /**< Number of openers. */
     bool removed;                       /**< True if deleted, false otherwise. */
     int deny_write_cnt;                 /**< 0: writes ok, >0: deny writes. */
     struct inode_disk data;             /**< Inode content. */
+    struct lock lock;
   };
 void inode_init (void);
-bool inode_create (block_sector_t, off_t);
+bool inode_create (block_sector_t, off_t, bool lazy);
 struct inode *inode_open (block_sector_t);
 struct inode *inode_reopen (struct inode *);
 block_sector_t inode_get_inumber (const struct inode *);

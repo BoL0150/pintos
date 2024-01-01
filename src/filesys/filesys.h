@@ -6,8 +6,10 @@
 #include "filesys/off_t.h"
 
 /** Sectors of system file inodes. */
-#define FREE_MAP_SECTOR 0       /**< Free map file inode sector. */
-#define ROOT_DIR_SECTOR 1       /**< Root directory file inode sector. */
+// 0号块保留，用来懒分配
+#define INVALID_SECTOR 0
+#define FREE_MAP_SECTOR 1       /**< Free map file inode sector. */
+#define ROOT_DIR_SECTOR 2       /**< Root directory file inode sector. */
 /** Block device that contains the file system. */
 struct block *fs_device;
 

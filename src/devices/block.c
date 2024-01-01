@@ -1,3 +1,4 @@
+#include "threads/interrupt.h"
 #include "devices/block.h"
 #include <list.h>
 #include <string.h>
@@ -121,7 +122,9 @@ void
 block_read (struct block *block, block_sector_t sector, void *buffer)
 {
   check_sector (block, sector);
+  enum intr_level old_level = intr_enable();
   block->ops->read (block->aux, sector, buffer);
+  intr_set_level(old_level); 
   block->read_cnt++;
 }
 
@@ -135,7 +138,9 @@ block_write (struct block *block, block_sector_t sector, const void *buffer)
 {
   check_sector (block, sector);
   ASSERT (block->type != BLOCK_FOREIGN);
+  enum intr_level old_level = intr_enable();
   block->ops->write (block->aux, sector, buffer);
+  intr_set_level(old_level);
   block->write_cnt++;
 }
 

@@ -105,6 +105,7 @@ struct thread
     struct file *ofile[32];          /**< 进程打开文件表*/
     struct mm_struct *mm;
     void *user_esp;                 /** 用户进程的esp*/
+    struct dir *cwd;              /** current directory(for shell)*/
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /**< Page directory. */
@@ -132,7 +133,6 @@ struct mm_struct {
 };
 struct vm_area_struct {
    struct list_elem vm_area_list_elem;
-   // char name[16];             
    uint32_t vm_end;
    bool writable;
    uint32_t read_bytes;

@@ -1,3 +1,4 @@
+#include "filesys/buf.h"
 #include "userprog/syscall.h"
 #include "lib/string.h"
 #include "filesys/filesys.h"
@@ -13,6 +14,7 @@
 struct block *fs_device;
 extern struct lock filesys_lock;
 extern struct list ready_list;
+extern bool continue_flush;
 static void do_format (void);
 /** Initializes the file system module.
    If FORMAT is true, reformats the file system. */
@@ -22,7 +24,7 @@ filesys_init (bool format)
   fs_device = block_get_role (BLOCK_FILESYS);
   if (fs_device == NULL)
     PANIC ("No file system device found, can't initialize file system.");
-
+  filesysBufCacheInit(); 
   inode_init ();
   free_map_init ();
 
@@ -38,6 +40,8 @@ void
 filesys_done (void) 
 {
   free_map_close ();
+  continue_flush = false;
+  flush();
 }
 
 /** Creates a file named NAME with the given INITIAL_SIZE.
@@ -54,12 +58,11 @@ filesys_create (const char *name, off_t initial_size)
   struct dir *dir = dir_open_root ();
   bool success = (dir != NULL
                   && free_map_allocate (1, &inode_sector)
-                  && inode_create (inode_sector, initial_size)
+                  && inode_create (inode_sector, initial_size, true)
                   && dir_add (dir, name, inode_sector));
   if (!success && inode_sector != 0) 
     free_map_release (inode_sector, 1);
   dir_close (dir);
-
   return success;
 }
 
@@ -71,18 +74,21 @@ filesys_create (const char *name, off_t initial_size)
 struct file *
 filesys_open (const char *name)
 {
-  if (list_size(&ready_list) != 0) {
-    ASSERT(lock_held_by_current_thread(&filesys_lock));
-  }
-  struct dir *dir = dir_open_root ();
-  struct inode *inode = NULL;
-
-  if (dir != NULL)
-    dir_lookup (dir, name, &inode);
-  dir_close (dir);
-  struct file *f = file_open (inode);
+  struct inode* inode = name_inode(name);
+  if (inode == NULL) return NULL;
+  struct file *f = file_open(inode);
   if (f != NULL) strlcpy(f->name, name, strlen(name) + 1);
   return f;
+
+  // struct dir *dir = dir_open_root ();
+  // struct inode *inode = NULL;
+
+  // if (dir != NULL)
+  //   dir_lookup (dir, name, &inode);
+  // dir_close (dir);
+  // struct file *f = file_open (inode);
+  // if (f != NULL) strlcpy(f->name, name, strlen(name) + 1);
+  // return f;
   // return file_open (inode);
 }
 

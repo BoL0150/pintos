@@ -1,3 +1,4 @@
+#include "filesys/directory.h"
 #include "threads/thread.h"
 #include "userprog/process.h"
 #include <debug.h>
@@ -375,8 +376,8 @@ thread_create (const char *name, int priority,
   init_thread (t, name, priority);
 
   tid = t->tid = allocate_tid ();
-
   t->parent = thread_current();
+  t->cwd = thread_current()->cwd;
   struct thread_exit_state *tes = (struct thread_exit_state*) malloc(sizeof(struct thread_exit_state));
   init_tes(tes, t);
   list_push_back(&thread_current()->child_list, &tes->child_list_elem);
@@ -715,7 +716,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->exit_state = 0;
   
   t->nice = 0;
-
+  t->cwd = dir_open_root();
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
   if (!thread_mlfqs) t->priority = priority;

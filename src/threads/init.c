@@ -465,6 +465,7 @@ locate_block_device (enum block_type role, const char *name)
     {
       printf ("%s: using %s\n", block_type_name (role), block_name (block));
       block_set_role (role, block);
+
     }
 }
 #endif
