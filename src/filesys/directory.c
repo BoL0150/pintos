@@ -6,27 +6,19 @@
 #include "filesys/inode.h"
 #include "threads/malloc.h"
 
-/** A directory. */
-struct dir 
-  {
-    struct inode *inode;                /**< Backing store. */
-    off_t pos;                          /**< Current position. */
-  };
-
-/** A single directory entry. */
-struct dir_entry 
-  {
-    block_sector_t inode_sector;        /**< Sector number of header. */
-    char name[NAME_MAX + 1];            /**< Null terminated file name. */
-    bool in_use;                        /**< In use or free? */
-  };
 
 /** Creates a directory with space for ENTRY_CNT entries in the
    given SECTOR.  Returns true if successful, false on failure. */
 bool
 dir_create (block_sector_t sector, size_t entry_cnt)
 {
-  return inode_create (sector, entry_cnt * sizeof (struct dir_entry), true, true);
+  bool success = inode_create (sector, entry_cnt * sizeof (struct dir_entry), true, true);
+  if (success) {
+    struct dir *dir = dir_open_root();
+    dir_add(dir, ".", ROOT_DIR_SECTOR);
+    dir_add(dir, "..", ROOT_DIR_SECTOR);
+  }
+  return success;
 }
 
 /** Opens and returns the directory for the given INODE, of which
@@ -110,7 +102,6 @@ lookup (const struct dir *dir, const char *name,
       }
   return false;
 }
-
 /** Searches DIR for a file with the given NAME
    and returns true if one exists, false otherwise.
    On success, sets *INODE to an inode for the file, otherwise to
@@ -123,6 +114,8 @@ dir_lookup (const struct dir *dir, const char *name,
 
   ASSERT (dir != NULL);
   ASSERT (name != NULL);
+  // 不允许在已经删除的inode中搜索
+  if (is_inode_removed(dir->inode)) return false;
   if (!is_inode_dir(dir->inode)) return false;
   if (lookup (dir, name, &e, NULL))
     *inode = inode_open (e.inode_sector);
@@ -138,6 +131,9 @@ dir_lookup (const struct dir *dir, const char *name,
    Returns true if successful, false on failure.
    Fails if NAME is invalid (i.e. too long) or a disk or memory
    error occurs. */
+// 一般来讲向目录中添加引用inode_sector的目录项应该增加这个inode的硬链接数，目前本系统中没有实现
+// 硬链接，所以在创建inode时（inode_create）直接将硬链接数置为1，使用dir_add时不改变硬链接数（比如
+// 增加..和.目录项都不改变对上一级inode和当前inode的硬链接数）
 bool
 dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
 {
@@ -174,11 +170,7 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
   strlcpy (e.name, name, sizeof e.name);
   e.inode_sector = inode_sector;
   success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
-
-  struct inode * inode = NULL;
  done:
-  dir_lookup(dir, name, &inode);
-  if (success) ASSERT(inode != NULL);
   return success;
 }
 // 除了.和..之外，目录是否为空
@@ -261,7 +253,7 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
 //   skipelem("", name) = skipelem("////", name) = 0
 //
 static char*
-skipelem(char *path, char *name) {
+skipelem(char *path, char *name, bool *is_valid) {
   while (*path == '/') path++;
   // 如果path的元素是0，那么说明path中没有任何元素，直接返回NULL
   if (*path == '\0') return NULL;
@@ -269,9 +261,10 @@ skipelem(char *path, char *name) {
   // 搜索到/或者0停止
   while (*path != '/' && *path != '\0') path++;
   int len = path - s;
-  if (len >= NAME_MAX) {
-    memcpy(name, s, NAME_MAX);
-    name[NAME_MAX] = '\0';
+  // 文件名大于合法的长度，则直接返回NULL
+  if (len > NAME_MAX) {
+    *is_valid = false;
+    return NULL;
   } else {
     memcpy(name, s, len);
     name[len] = '\0';
@@ -288,9 +281,10 @@ namex(char *path, int nameiparent, char *name)
   if (*path == 0) return NULL;
   if (*path == '/') dir = dir_open_root();
   else dir = dir_reopen(thread_current()->cwd);
-  struct inode *next;
+  struct inode *next = NULL;
+  bool is_valid = true;
   // 如果没有下一个元素那么就结束了
-  while((path = skipelem(path, name)) != 0){
+  while((path = skipelem(path, name, &is_valid)) != 0){
     // 如果我们要获取父节点的inode，那么当剩下的path是空的时，就可以返回。
     // 此时已经获取了path中的最后一个元素name，dir中的inode也是name的上一级inode
     if(nameiparent && *path == '\0'){
@@ -303,7 +297,7 @@ namex(char *path, int nameiparent, char *name)
     dir_close(dir);
     dir = dir_open(next);
   }
-  if(nameiparent){
+  if(nameiparent || !is_valid){
     dir_close(dir);
     return NULL;
   }

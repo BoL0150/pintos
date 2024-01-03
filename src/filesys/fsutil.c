@@ -119,7 +119,7 @@ fsutil_extract (char **argv UNUSED)
           printf ("Putting '%s' into the file system...\n", file_name);
 
           /* Create destination file. */
-          if (!filesys_create (file_name, size))
+          if (!filesys_create (file_name, size, false))
             PANIC ("%s: create failed", file_name);
           dst = filesys_open (file_name);
           if (dst == NULL)
@@ -140,6 +140,8 @@ fsutil_extract (char **argv UNUSED)
           file_close (dst);
         }
     }
+  // struct file *file = filesys_open("tar");
+  // ASSERT(file != NULL);
 
   /* Erase the ustar header from the start of the block device,
      so that the extraction operation is idempotent.  We erase

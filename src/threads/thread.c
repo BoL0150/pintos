@@ -39,7 +39,7 @@ struct list all_list;
 static struct thread *idle_thread;
 
 /** Initial thread, the thread running init.c:main(). */
-static struct thread *initial_thread;
+struct thread *initial_thread;
 
 /** Lock used by allocate_tid(). */
 static struct lock tid_lock;
@@ -377,7 +377,8 @@ thread_create (const char *name, int priority,
 
   tid = t->tid = allocate_tid ();
   t->parent = thread_current();
-  t->cwd = thread_current()->cwd;
+  // idle线程不分配cwd
+  if (t->tid != 2) t->cwd = dir_reopen(thread_current()->cwd);
   struct thread_exit_state *tes = (struct thread_exit_state*) malloc(sizeof(struct thread_exit_state));
   init_tes(tes, t);
   list_push_back(&thread_current()->child_list, &tes->child_list_elem);

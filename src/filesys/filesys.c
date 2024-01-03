@@ -15,6 +15,7 @@ struct block *fs_device;
 extern struct lock filesys_lock;
 extern struct list ready_list;
 extern bool continue_flush;
+extern struct thread *initial_thread;
 static void do_format (void);
 /** Initializes the file system module.
    If FORMAT is true, reformats the file system. */
@@ -22,10 +23,13 @@ void
 filesys_init (bool format) 
 {
   fs_device = block_get_role (BLOCK_FILESYS);
+  block_print_stats();
+  // printf("******block name %s*******\n", block_name(fs_device));
   if (fs_device == NULL)
     PANIC ("No file system device found, can't initialize file system.");
-  filesysBufCacheInit(); 
   inode_init ();
+  initial_thread->cwd = dir_open_root();
+  filesysBufCacheInit(); 
   free_map_init ();
 
   if (format) 
@@ -40,8 +44,9 @@ void
 filesys_done (void) 
 {
   free_map_close ();
-  continue_flush = false;
   flush();
+  continue_flush = false;
+
 }
 
 /** Creates a file named NAME with the given INITIAL_SIZE.
@@ -51,19 +56,19 @@ filesys_done (void)
 bool
 filesys_create (const char *path, off_t initial_size, bool is_dir) 
 {
-  if (list_size(&ready_list) != 0) {
-    ASSERT(lock_held_by_current_thread(&filesys_lock));
-  }
   block_sector_t inode_sector = 0;
-  char name[NAME_MAX];
+  char name[NAME_MAX + 1];
   struct dir *dir = name_inode_parent(path, name);
-  struct inode *inode;
+  struct inode *inode = NULL;
   // 要求path中最后一个元素之前的所有元素都存在（dir != NULL)，并且最后一个元素不存在
+  // 并且目录没有被移除
   bool success = (dir != NULL
+                  && !is_inode_removed(dir_get_inode(dir))
                   && !dir_lookup(dir, name, &inode)
                   && free_map_allocate (1, &inode_sector)
                   && inode_create(inode_sector, initial_size, true, is_dir)
                   && dir_add(dir, name, inode_sector));
+  inode_close(inode);
   if (!success && inode_sector != 0) 
     free_map_release(inode_sector, 1);
   dir_close(dir);
@@ -79,21 +84,11 @@ filesys_open (const char *name)
 {
   struct dir* dir = name_inode(name);
   if (dir == NULL) return NULL;
+  if (is_inode_removed(dir_get_inode(dir))) return NULL;  
   struct file *f = file_open(inode_reopen(dir_get_inode(dir)));
-  if (f != NULL) strlcpy(f->name, name, strlen(name) + 1);
+  // if (f != NULL) strlcpy(f->name, name, strlen(name) + 1);
   dir_close(dir);
   return f;
-
-  // struct dir *dir = dir_open_root ();
-  // struct inode *inode = NULL;
-
-  // if (dir != NULL)
-  //   dir_lookup (dir, name, &inode);
-  // dir_close (dir);
-  // struct file *f = file_open (inode);
-  // if (f != NULL) strlcpy(f->name, name, strlen(name) + 1);
-  // return f;
-  // return file_open (inode);
 }
 
 /** Deletes the file named NAME.
@@ -103,10 +98,7 @@ filesys_open (const char *name)
 bool
 filesys_remove (const char *name) 
 {
-  if (list_size(&ready_list) != 0) {
-    ASSERT(lock_held_by_current_thread(&filesys_lock));
-  }
-  char remove_name[NAME_MAX];
+  char remove_name[NAME_MAX + 1];
   struct dir *parent_dir = name_inode_parent(name, remove_name);
   bool success = ((parent_dir != NULL) && dir_remove(parent_dir, remove_name));
   dir_close(parent_dir);

@@ -122,14 +122,12 @@ pintos_init (void)
   thread_start ();
   serial_init_queue ();
   timer_calibrate ();
-
 #ifdef FILESYS
   /* Initialize file system. */
   ide_init ();
   locate_block_devices ();
   filesys_init (format_filesys);
 #endif
-  thread_current()->cwd = dir_open_root();
 #ifdef VM
   swap_table_init();
 #endif

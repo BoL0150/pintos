@@ -53,7 +53,7 @@ static void *argaddr(int n, bool check, int str_len) {
     // 触发完pagefault之后还要将该page pin住，在整个系统调用的过程中不能被驱逐出去，否则还是会
     // 出现在内核中pagefault的情况
     if (i == 0) pin_frame(thread_current()->pagedir, addr);
-    if (pg_ofs(addr + i) == 0) pin_frame(thread_current()->pagedir, addr + i);
+    else if (pg_ofs(addr + i) == 0) pin_frame(thread_current()->pagedir, addr + i);
   }
   return addr;
 }
@@ -64,7 +64,7 @@ unpin_user_frame(int n, int str_len) {
     if (str_len == -1 && *(char*)(addr + i) == 0) break;
     if (str_len != -1 && i == str_len) break;
     if (i == 0) unpin_frame(thread_current()->pagedir, addr);
-    if (pg_ofs(addr + i) == 0) unpin_frame(thread_current()->pagedir, addr + i);
+    else if (pg_ofs(addr + i) == 0) unpin_frame(thread_current()->pagedir, addr + i);
   }
 }
 static uint32_t get_sys_num(void) {
@@ -139,7 +139,8 @@ static int32_t sys_open(void){
   // 阻止向正在运行的可执行文件写入
   if (is_running_exefile(file_name)) file_deny_write(f);
   unpin_user_frame(1, -1);
-  return fdalloc(f);
+  uint32_t fd = fdalloc(f);
+  return fd;
 } 
 static int32_t sys_filesize(void){
   int fd = arg_fd(1);
@@ -174,7 +175,6 @@ static int32_t sys_read(void){
 // 从buffer中向指定的fd写入size字节，如果fd是1，写到控制台上；写到了文件的末尾通常会扩展文件，但是此时（p2）还没有实现
 // 现在是尽可能地写直到末尾停止
 static int32_t sys_write(void){
-  // printf("WRITE *********\n");
   int fd = arg_fd(1);
   uint32_t size = argint(3);
   void* buffer = argaddr(2, true, size);
@@ -185,6 +185,8 @@ static int32_t sys_write(void){
     res = size;
   } else if (fd == 0) {
     exit_from_user_process(-1);
+  } else if (is_inode_dir(f->inode)) {
+    exit_from_user_process(-1); 
   } else {
     lock_acquire(&filesys_lock);
     res = file_write(f, buffer, size);
@@ -258,7 +260,7 @@ static int32_t sys_mkdir(void) {
   uint32_t success = (uint32_t)filesys_create(path, 0, true);
   if (success) {
     struct dir *dir = name_inode(path);
-    char temp[NAME_MAX];
+    char temp[NAME_MAX + 1];
     struct dir *parent_dir = name_inode_parent(path, temp);
     ASSERT(dir != NULL && is_inode_dir(dir_get_inode(dir)));
     enum intr_level old_level = intr_disable();
@@ -266,6 +268,8 @@ static int32_t sys_mkdir(void) {
     dir_add(dir, ".", dir_get_inode(dir)->sector);
     dir_add(dir, "..", dir_get_inode(parent_dir)->sector);
     intr_set_level(old_level);
+    dir_close(dir);
+    dir_close(parent_dir);
   }
   unpin_user_frame(1, -1);
   return success;
@@ -274,10 +278,16 @@ static int32_t sys_readdir(void) {
   int fd = arg_fd(1);
   char *name = (char*)argaddr(2, true, READDIR_MAX_LEN + 1);
   struct file *file = thread_current()->ofile[fd];
+  ASSERT(is_inode_dir(file->inode)); 
+
   struct dir *dir = dir_open(inode_reopen(file->inode));
-  ASSERT(dir_readdir(dir, name) && strcmp(name, ".") == 0);
-  ASSERT(dir_readdir(dir, name) && strcmp(name, "..") == 0);
+  dir->pos = file->pos;
+  if (dir->pos == 0) {
+    ASSERT(dir_readdir(dir, name) && strcmp(name, ".") == 0);
+    ASSERT(dir_readdir(dir, name) && strcmp(name, "..") == 0);
+  }
   bool success = dir_readdir(dir, name);
+  file->pos = dir->pos;
   dir_close(dir);
   unpin_user_frame(2, READDIR_MAX_LEN + 1);
   return success;

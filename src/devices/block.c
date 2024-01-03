@@ -29,7 +29,7 @@ static struct list all_blocks = LIST_INITIALIZER (all_blocks);
 static struct block *block_by_role[BLOCK_ROLE_CNT];
 
 static struct block *list_elem_to_block (struct list_elem *);
-
+extern struct block *fs_device;
 /** Returns a human-readable name for the given block device
    TYPE. */
 const char *
@@ -136,6 +136,8 @@ block_read (struct block *block, block_sector_t sector, void *buffer)
 void
 block_write (struct block *block, block_sector_t sector, const void *buffer)
 {
+  // if (block == fs_device && sector == 2) 
+  //   printf("\n\n\n####################\n\n\n");
   check_sector (block, sector);
   ASSERT (block->type != BLOCK_FOREIGN);
   enum intr_level old_level = intr_enable();

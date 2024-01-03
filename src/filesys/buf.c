@@ -75,6 +75,7 @@ bget(struct block* block, block_sector_t sector_idx) {
         if (cur_buf->dirty) {
             // block_write对外设进行操作，不能关闭中断
             block_write(block, cur_buf->sector_idx, cur_buf->data);
+            // printf("******flush sector %d*******\n", cur_buf->sector_idx);
             cur_buf->dirty = false;
         }
         cur_buf->valid = 0;
@@ -149,17 +150,21 @@ flush_thread(void *aux UNUSED) {
 void 
 flush(void) {
     ASSERT(filesysBuf != NULL);
+    ASSERT(block_type(fs_device) == BLOCK_FILESYS);
     struct bufCache *bufCache = filesysBuf;
-    struct block *block = block_get_role(BLOCK_FILESYS);
+    ASSERT(list_size(&bufCache->free_list) == BUFCNT);
+    // struct block *block = block_get_role(BLOCK_FILESYS);
     // static int flush_times = 0;
     // printf("flush %d\n", flush_times++);
-    timer_sleep(20);
+    timer_sleep(5);
     enum intr_level old_level = intr_disable();
+    
     for (struct list_elem *e = list_begin(&bufCache->free_list); e != list_end(&bufCache->free_list); e = list_next(e)) {
         struct buf * cur_buf = list_entry(e, struct buf, free_list_elem);
         if (cur_buf->dirty) {
+            // printf("******flush sector %d*******\n", cur_buf->sector_idx);
             ASSERT(cur_buf->ref_cnt == 0);
-            block_write(block, cur_buf->sector_idx, cur_buf->data);
+            block_write(fs_device, cur_buf->sector_idx, cur_buf->data);
             cur_buf->dirty = false; 
         }
     }

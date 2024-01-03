@@ -1,3 +1,4 @@
+#include "filesys/directory.h"
 #include "filesys/file.h"
 #include <debug.h>
 #include "filesys/inode.h"
@@ -16,6 +17,7 @@ file_open (struct inode *inode)
       file->inode = inode;
       file->pos = 0;
       file->deny_write = false;
+      // file->dir = NULL;
       return file;
     }
   else
@@ -42,6 +44,8 @@ file_close (struct file *file)
     {
       // 关闭文件时要重新允许每个文件写入
       file_allow_write (file);
+      // if (file->dir != NULL) 
+      //   dir_close(file->dir);
       inode_close (file->inode);
       free (file); 
     }
@@ -88,6 +92,7 @@ file_read_at (struct file *file, void *buffer, off_t size, off_t file_ofs)
 off_t
 file_write (struct file *file, const void *buffer, off_t size) 
 {
+  ASSERT(!is_inode_dir(file->inode));
   off_t bytes_written = inode_write_at (file->inode, buffer, size, file->pos);
   file->pos += bytes_written;
   return bytes_written;

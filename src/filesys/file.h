@@ -11,10 +11,11 @@ struct inode;
 /** An open file. */
 struct file 
   {
-    char name[16];              /**< Name (for debugging purposes). */
+    // char name[16];              /**< Name (for debugging purposes). */
     struct inode *inode;        /**< File's inode. */
     off_t pos;                  /**< Current position. */
     bool deny_write;            /**< Has file_deny_write() been called? */
+    struct dir *dir;            /**< for readdir function*/
   };
 
 /** Opening and closing files. */

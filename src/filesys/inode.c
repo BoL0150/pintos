@@ -52,16 +52,8 @@ byte_to_sector (const struct inode *inode, off_t pos, bool alloc)
 {
   ASSERT (inode != NULL);
   ASSERT (lock_held_by_current_thread(&inode->lock));
-  // #ifndef filesys 
-  // if (pos < inode->data.length)
-  //   return inode->data.start + pos / BLOCK_SECTOR_SIZE;
-  // else
-  //   return -1;
-  // #else
-
   // 允许文件增长后，写的位置有可能大于length，
   // if (pos >= inode->data.length) return -1;
-
   // pos是inode的第几块数据块（从1开始）;0~511字节属于第一块，512~1023字节属于第二块
   block_sector_t sector_offset = bytes_to_sectors(pos + 1);  
   ASSERT(sector_offset != 0);
@@ -152,9 +144,7 @@ inode_create (block_sector_t sector, off_t length, bool lazy, bool is_dir)
 {
   struct inode_disk *disk_inode = NULL;
   bool success = false;
-
   ASSERT (length >= 0);
-
   /* If this assertion fails, the inode structure is not exactly
      one sector in size, and you should fix that. */
   ASSERT (sizeof *disk_inode == BLOCK_SECTOR_SIZE);
@@ -166,7 +156,9 @@ inode_create (block_sector_t sector, off_t length, bool lazy, bool is_dir)
       size_t sectors = bytes_to_sectors (length);
       disk_inode->length = length;
       disk_inode->magic = INODE_MAGIC;
-      disk_inode->nlink = 0;
+      // 创建inode时直接把硬链接数置为1，之后dir_add不改变硬链接数
+      // 主要是防止根目录和free_map的inode被删，因为它们没有目录项
+      disk_inode->nlink = 1;
       disk_inode->is_dir = is_dir;
       for (int i = 0; i < NDIRECT + NINDIRECT + NININDIRECT; i++) {
         ASSERT(disk_inode->addrs[i] == 0);
@@ -180,21 +172,6 @@ inode_create (block_sector_t sector, off_t length, bool lazy, bool is_dir)
         }
       }
       success = true;
-      // #ifndef filesys
-      // if (free_map_allocate (sectors, &disk_inode->start)) 
-      //   {
-      //     block_write (fs_device, sector, disk_inode);
-      //     if (sectors > 0) 
-      //       {
-      //         static char zeros[BLOCK_SECTOR_SIZE];
-      //         size_t i;
-      //         
-      //         for (i = 0; i < sectors; i++) 
-      //           block_write (fs_device, disk_inode->start + i, zeros);
-      //       }
-      //     success = true; 
-      //   } 
-      // #else
       // 类似懒分配，创建inode的时候不给数据块分配磁盘空间，只记录长度；当读取的时候返回0，写入的时候再分配数据块
       // 将修改保存
       buf_write(sector, 0, (void*)disk_inode, BLOCK_SECTOR_SIZE);
@@ -202,7 +179,6 @@ inode_create (block_sector_t sector, off_t length, bool lazy, bool is_dir)
     }
   return success;
 }
-
 /** Reads an inode from SECTOR
    and returns a `struct inode' that contains it.
    Returns a null pointer if memory allocation fails. */
@@ -243,14 +219,8 @@ inode_open (block_sector_t sector)
   inode->valid = false;
   inode->nlink = 0;
   inode_lock_init(inode);
+  // printf("******inode_open:%p;inode_open_cnt:%d\n",inode, inode->open_cnt);
   // inode open时不需要读取数据，只有当真正需要时（加锁时）才读取
-  // #ifndef FILESYS 
-  // block_read (fs_device, inode->sector, &inode->data);
-  // #else
-  // struct buf *buf = bread(fs_device, inode->sector);
-  // memcpy((void *)&inode->data, buf->data, BLOCK_SECTOR_SIZE);
-  // brelease(buf);
-  // #endif
   intr_set_level(old_level);
   return inode;
 }
@@ -264,6 +234,7 @@ inode_reopen (struct inode *inode)
   if (inode != NULL)
     inode->open_cnt++;
   intr_set_level(old_level);
+  // printf("******inode_open:%p;inode_open_cnt:%d\n",inode, inode->open_cnt);
   return inode;
 }
 
@@ -287,17 +258,20 @@ inode_close (struct inode *inode)
   if (inode == NULL)
     return;
   enum intr_level old_level = intr_disable();
+
+  // printf("*****inode_close:%p;inode_open_cnt:%d\n",inode, inode->open_cnt - 1);
   /* Release resources if this was the last opener. */
   if (inode->open_cnt == 1) {
     list_remove(&inode->elem);
+    bool locked = inode_lock(inode);
     // 只有valid才有可能修改过nlink，才有必要释放磁盘的数据
     if (inode->valid && inode->nlink == 0) {
-      bool locked = inode_lock(inode);
       free_inode_disk_data(inode); 
-      // 由于inode被从icache中驱逐了，并且free_inode_disk_data修改了inode，所以这里要把更新写回上一层缓存
-      inode_update(inode);
-      if (locked) inode_unlock(inode);
     }
+    // 由于inode被从icache中驱逐，所以这里要把更新写回上一层缓存
+    inode_update(inode);
+    if (locked) inode_unlock(inode);
+    // printf("free sector no:%d inode\n", inode->sector);
     free(inode);
   } else {
     inode->open_cnt--;
@@ -323,7 +297,8 @@ void free_inode_disk_data(struct inode *inode) {
   free_data_block(addrs, NDIRECT, 0);
   if (sectors > DIRECT_SECTOR_NUM) free_data_block(addrs + NDIRECT, NINDIRECT, 1);
   if (sectors > DIRECT_SECTOR_NUM + INDIRECT_SECTOR_NUM) free_data_block(addrs + NDIRECT + NINDIRECT, NININDIRECT, 2);
-  // inode_update(inode); 这里没必要更新inode，因为inode还在icache中
+  // 释放inode的数据块会导致inode也被修改，需要将inode写回buf
+  inode_update(inode); 
   // free_data_block(addrs + NDIRECT, NINDIRECT, 0);
   // free_data_block(addrs + NDIRECT + NINDIRECT, NININDIRECT, 0);
 }
@@ -352,7 +327,8 @@ inode_unlink (struct inode *inode)
   ASSERT(inode->nlink >= 1);
   inode->nlink--;
   inode->data.nlink = inode->nlink;
-  inode_unlock(locked);
+  inode_update(inode); // inode的data被修改了，需要写回buf
+  if (locked) inode_unlock(inode);
   intr_set_level(old_level);
 }
 
@@ -364,7 +340,6 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
 {
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
-  uint8_t *bounce = NULL;
   bool locked = inode_lock(inode);
   while (size > 0) 
     {
@@ -374,6 +349,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
       /* Bytes left in inode, bytes left in sector, lesser of the two. */
+      // read时需要受到文件长度的限制，读到末尾了则读取的长度为inode的长度减去读取的起点
       off_t inode_left = inode_length (inode) - offset;
       int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
       int min_left = inode_left < sector_left ? inode_left : sector_left;
@@ -383,42 +359,19 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       if (chunk_size <= 0)
         break;
 
-      #ifndef FILESYS
-      if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE)
-        {
-          /* Read full sector directly into caller's buffer. */
-          block_read (fs_device, sector_idx, buffer + bytes_read);
-        }
-      else 
-        {
-          /* Read sector into bounce buffer, then partially copy
-             into caller's buffer. */
-          if (bounce == NULL) 
-            {
-              bounce = malloc (BLOCK_SECTOR_SIZE);
-              if (bounce == NULL)
-                break;
-            }
-          block_read (fs_device, sector_idx, bounce);
-          memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
-        }
-      #else
-      struct buf* buf;
       if(sector_idx != 0) {
-        buf = bread(fs_device, sector_idx);
+        struct buf * buf = bread(fs_device, sector_idx);
         memcpy(buffer + bytes_read, buf->data + sector_ofs, chunk_size);
         // pintos与xv6不一样，从buffer cache读取到另一个buffer中，所以memcpy之后就不会直接访问buffer cache了，可以直接释放
         brelease(buf, false);
       } else {
         memset((void*)(buffer + bytes_read), 0, chunk_size);
       }
-      #endif 
       /* Advance. */
       size -= chunk_size;
       offset += chunk_size;
       bytes_read += chunk_size;
     }
-  if (bounce != NULL) free (bounce);
   if (locked) inode_unlock(inode);
   return bytes_read;
 }
@@ -434,7 +387,6 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 {
   const uint8_t *buffer = buffer_;
   off_t bytes_written = 0;
-  uint8_t *bounce = NULL;
 
   if (inode->deny_write_cnt)
     return 0;
@@ -446,59 +398,29 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       /* Sector to write, starting byte offset within sector. */
       // write时需要将未分配的block分配
       block_sector_t sector_idx = byte_to_sector (inode, offset, true);
-      // 这里没必要更新inode，因为inode还在icache中
-      // inode_update(inode); // byte_to_sector中有可能在addr中分配了内容，所以inode要更新
       ASSERT(sector_idx != 0);
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
       /* Bytes left in inode, bytes left in sector, lesser of the two. */
-      off_t inode_left = inode_length (inode) - offset;
-      int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
-      int min_left = inode_left < sector_left ? inode_left : sector_left;
-
+      // 可扩展的文件不需要用inode的剩余长度（inode_left)来限制写入的长度了，只需要用sector的大小来限制一次写入的长度
+      // off_t inode_left = inode_length (inode) - offset;
+      // int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
+      // int min_left = inode_left < sector_left ? inode_left : sector_left;
+      int min_left = BLOCK_SECTOR_SIZE - sector_ofs;
       /* Number of bytes to actually write into this sector. */
       int chunk_size = size < min_left ? size : min_left;
       if (chunk_size <= 0)
         break;
-      #ifndef FILESYS 
-      if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE)
-        {
-          /* Write full sector directly to disk. */
-          block_write (fs_device, sector_idx, buffer + bytes_written);
-        }
-      else 
-        {
-          /* We need a bounce buffer. */
-          if (bounce == NULL) 
-            {
-              bounce = malloc (BLOCK_SECTOR_SIZE);
-              if (bounce == NULL)
-                break;
-            }
-
-          /* If the sector contains data before or after the chunk
-             we're writing, then we need to read in the sector
-             first.  Otherwise we start with a sector of all zeros. */
-          if (sector_ofs > 0 || chunk_size < sector_left) 
-            block_read (fs_device, sector_idx, bounce);
-          else
-            memset (bounce, 0, BLOCK_SECTOR_SIZE);
-          memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);
-          block_write (fs_device, sector_idx, bounce);
-        }
-      #else
       buf_write(sector_idx, sector_ofs, (void*)buffer + bytes_written, chunk_size);
-      #endif 
-
       /* Advance. */
       size -= chunk_size;
       offset += chunk_size;
       bytes_written += chunk_size;
     }
-  if (bounce != NULL) free (bounce);
   // 文件增长
   if (offset > inode->data.length) 
     inode->data.length = offset;
+  inode_update(inode); // byte_to_sector中有可能在addr中分配了内容，所以inode要更新
   if (locked) inode_unlock(inode);
   return bytes_written;
 }
@@ -541,6 +463,14 @@ bool
 is_inode_dir(struct inode *inode) {
   bool locked = inode_lock(inode);
   bool res = inode->data.is_dir;
+  if (locked) inode_unlock(inode);
+  return res;
+}
+
+bool 
+is_inode_removed(struct inode *inode) {
+  bool locked = inode_lock(inode);
+  bool res = (inode->data.nlink == 0);
   if (locked) inode_unlock(inode);
   return res;
 }
